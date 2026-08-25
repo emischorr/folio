@@ -1,0 +1,33 @@
+services:
+  app:
+    build: .
+    command: sleep infinity
+    volumes:
+      - ..:/workspace:cached
+    environment:
+      # config/dev.exs and config/test.exs read this for the Repo host.
+      PGHOST: db
+      # config/dev.exs binds 0.0.0.0 when set.
+      DEVCONTAINER: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    # Deliberately no published port: the host may already run the root
+    # docker-compose.yml's Postgres on :5432.
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: folio_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

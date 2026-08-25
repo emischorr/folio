@@ -87,3 +87,59 @@ already expect (`postgres` / `postgres`). Data persists in `.docker/postgres`.
   (LiveDashboard) and `/dev/mailbox` (Swoosh local adapter preview).
 - **HTTP client is `Req`.** It is already a dependency.
 - Generators default to `timestamp_type: :utc_datetime` (`config/config.exs`).
+
+## CodeLead preview contract
+
+This repository is developed with CodeLead. Tasks run in a git worktree and
+the Review tab previews this app's dev server, so a few things have to keep
+working. Check them before touching dev config, the server entrypoint, or how
+URLs and assets are emitted.
+
+CodeLead exports three variables into the preview command and into every
+terminal session. All three are absent in ordinary local dev, so each rule
+below must be a no-op when they are unset:
+
+- `PREVIEW_PORT` — the port to listen on. **Bind it; never hardcode a port.**
+  Already wired: `config/runtime.exs` reads `PORT || PREVIEW_PORT || 4000`, so
+  the preview command is a bare `mix phx.server` with no `PORT=` prefix.
+- `PREVIEW_BASE_PATH` — the path prefix this app is served under, e.g.
+  `/preview/42`, with **no trailing slash**; empty when the app owns its own
+  origin. **Honor it:** set `url: [path: System.get_env("PREVIEW_BASE_PATH", "/")]` on the endpoint in `config/dev.exs`.
+- `PREVIEW_ORIGIN` — the browser-facing origin the preview is reached at.
+
+The rest holds whether or not those variables are set:
+
+- **Bind `0.0.0.0`, not `127.0.0.1`.** When the task runs in a container the
+  preview reaches this app over the container network, and a socket bound to
+  the container's own loopback is invisible to it. Already wired: the endpoint
+  in `config/dev.exs` binds every interface when `DEVCONTAINER` is set, which
+  `.devcontainer/compose.yml` does; local dev stays on loopback.
+
+- **The LiveSocket path is rendered, never hardcoded.** `root.html.heex` emits
+  `FolioWeb.Endpoint.path("/live")` into a `live-socket-path` meta tag and
+  `assets/js/app.js` reads it. Do not put a literal `"/live"` back into
+  `new LiveSocket(...)` — under a path preview that opens against CodeLead's own
+  LiveView endpoint, which rejects the join, and the page reloads itself forever.
+
+- **Never write a root-absolute URL by hand.** The preview proxy never
+  rewrites response bodies, so `href="/"`, `src="/assets/…"`, `url("/fonts/…")`
+  in CSS, `fetch("/api/…")` and hardcoded websocket paths escape the prefix and
+  hit CodeLead instead of this app. Use the router's own path helper; make CSS
+  urls relative to where the *bundle* lands. A hardcoded socket path is the
+  worst case — it makes the preview reload itself in a loop.
+
+- **The dev server must be a single process.** Dependency installs, database
+  setup and seeds belong in `.devcontainer` lifecycle hooks
+  (`postCreateCommand` / `postStartCommand`), never chained onto the start
+  command with `&&`.
+
+- **Keep toolchain state out of `$HOME`.** CodeLead overrides `HOME` per task,
+  so anything installed under `~` (nvm, rustup, pyenv, cargo, hex) is invisible
+  to agents — point those at `/opt/…` in the devcontainer image instead. Build
+  output belongs off the shared workspace mount for the same class of reason.
+  Already wired: `.devcontainer/Dockerfile` sets `MIX_HOME`/`HEX_HOME` and
+  `MIX_BUILD_ROOT` under `/opt`, and runs as the non-root `dev` user.
+
+- **The Repo host comes from `PGHOST`** (`config/dev.exs`, `config/test.exs`),
+  defaulting to `localhost`. `.devcontainer/compose.yml` points it at the
+  sibling `db` service; the root `docker-compose.yml` remains the local path.

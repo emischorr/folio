@@ -1,0 +1,10 @@
+{
+  "name": "folio",
+  "dockerComposeFile": "compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "dev",
+  // Deps, DB create/migrate/seed and asset build belong here - never chained
+  // onto the preview command with `&&`, which must stay a single process.
+  "postCreateCommand": "mix setup"
+}

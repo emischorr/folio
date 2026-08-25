@@ -4,7 +4,7 @@ import Config
 config :folio, Folio.Repo,
   username: "postgres",
   password: "postgres",
-  hostname: "localhost",
+  hostname: System.get_env("PGHOST", "localhost"),
   database: "folio_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
@@ -18,9 +18,11 @@ config :folio, Folio.Repo,
 # to bundle .js and .css sources.
 config :folio, FolioWeb.Endpoint,
   url: [path: System.get_env("PREVIEW_BASE_PATH", "/")],
-  # Binding to loopback ipv4 address prevents access from other machines.
-  # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}],
+  # Loopback prevents access from other machines. Inside a container the preview
+  # reaches this app over the container network, so a socket on the container's
+  # own loopback would be invisible - DEVCONTAINER is set in
+  # .devcontainer/compose.yml and switches the binding to every interface.
+  http: [ip: if(System.get_env("DEVCONTAINER"), do: {0, 0, 0, 0}, else: {127, 0, 0, 1})],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

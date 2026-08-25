@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PW}
+      APP_DB_PW: ${APP_DB_PW}
+    volumes:
+      - pg:/var/lib/postgresql
+      - ./init-app-db.sh:/docker-entrypoint-initdb.d/init-app-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: ghcr.io/emischorr/folio:latest
+    command: ["/app/bin/migrate"]
+    restart: "no"
+    environment:
+      DATABASE_URL: ecto://folio:${APP_DB_PW}@db/folio
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    image: ghcr.io/emischorr/folio:latest
+    command: ["/app/bin/server"]
+    environment:
+      DATABASE_URL: ecto://folio:${APP_DB_PW}@db/folio
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      PHX_HOST: localhost
+    ports:
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pg:

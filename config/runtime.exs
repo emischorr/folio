@@ -20,7 +20,12 @@ if System.get_env("PHX_SERVER") do
   config :folio, FolioWeb.Endpoint, server: true
 end
 
-config :folio, FolioWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+# PREVIEW_PORT is exported by CodeLead for the previewed dev server; PORT still
+# wins, and both unset leaves the usual 4000.
+config :folio, FolioWeb.Endpoint,
+  http: [
+    port: String.to_integer(System.get_env("PORT") || System.get_env("PREVIEW_PORT") || "4000")
+  ]
 
 # Optional CoinGecko demo API key: raises the public rate limit from ~5-15
 # to 100 requests/minute. See README "Data sources".
