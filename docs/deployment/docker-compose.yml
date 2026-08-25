@@ -31,7 +31,17 @@ services:
     environment:
       DATABASE_URL: ecto://folio:${APP_DB_PW}@db/folio
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      
+      # The host or IP you type into the address bar. The websocket origin check
+      # compares against it, so a mismatch means no live updates.
       PHX_HOST: localhost
+      
+      # Behind a reverse proxy that terminates TLS, uncomment:
+      # SCHEME: https
+
+      # Comma-separated allowed websocket origins, or "false" to disable the check.
+      # Only needed when Folio is reachable under more than one name.
+      # CHECK_ORIGIN: "https://folio.example.com,http://192.168.1.50:4000"
     ports:
       - "4000:4000"
     depends_on:

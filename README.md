@@ -59,7 +59,30 @@ Environment variables are read in `config/runtime.exs`, and nowhere else.
 | `COINGECKO_API_KEY` | — | Optional free demo key; raises the crypto rate limit to 100 req/min |
 | `DATABASE_URL` | — | Required in production |
 | `SECRET_KEY_BASE` | — | Required in production |
-| `PHX_HOST` / `PORT` | `example.com` / `4000` | Public hostname and listen port |
+| `PHX_HOST` | `localhost` | Hostname or IP you reach Folio at — must match the address bar |
+| `PORT` | `4000` | Port Folio listens on |
+| `SCHEME` | `http` | Set to `https` when a proxy in front terminates TLS |
+| `URL_PORT` | `PORT`, or `443` when `SCHEME=https` | Public port used in generated URLs |
+| `CHECK_ORIGIN` | `PHX_HOST` | Comma-separated allowed websocket origins, or `false` to disable the check |
+
+## Deployment
+
+`docs/deployment/` holds a Docker Compose example built around the published image
+(`ghcr.io/emischorr/folio`) and a Postgres service.
+
+Folio serves **plain HTTP** and never terminates TLS itself. Reach it directly at
+`http://<host>:4000`, or put your own reverse proxy in front — the proxy owns the
+certificate, the `http` → `https` redirect and any HSTS header. When you do, set
+`SCHEME=https` so links and the session cookie match what the browser sees.
+
+Set `PHX_HOST` to the host or IP you actually type into the address bar. Phoenix
+checks the websocket origin against it, so a mismatch leaves the page rendered but
+dead — no live updates. Use `CHECK_ORIGIN` when Folio is reachable under more than
+one name.
+
+> **Upgrading from an earlier build?** It sent an HSTS header, so your browser may
+> still force `https://` for that hostname. Clear the pin via
+> `chrome://net-internals/#hsts` (or the Firefox equivalent) before plain HTTP loads.
 
 ## External data sources
 

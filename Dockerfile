@@ -1,8 +1,8 @@
 # Once:
-# - docker buildx create --name multiarch --driver docker-container --use
+# - docker buildx create --name multiarch --driver docker-container
 # - docker login ghcr.io
-# build & push it:
-# docker buildx build --platform=linux/amd64,linux/arm64 --no-cache -t ghcr.io/emischorr/folio:0.1.0 -t ghcr.io/emischorr/folio:latest --push .
+# build & push it (--builder is required: the default builder is often the `docker` driver, which cannot do multi-platform builds):
+# docker buildx build --builder multiarch --platform=linux/amd64,linux/arm64 --no-cache -t ghcr.io/emischorr/folio:0.1.0 -t ghcr.io/emischorr/folio:latest --push .
 
 ARG RELEASE_NAME=folio
 
@@ -33,23 +33,38 @@ ENV ERL_FLAGS="-noinput +JPperf true"
 RUN mix local.hex --force && \
   mix local.rebar --force
 
-# redeclare it as it is lost after the FROM above
+# redeclare them as they are lost after the FROM above
 ARG MIX_ENV
+ARG RELEASE_NAME
 ENV MIX_ENV="${MIX_ENV}"
 
-COPY . /app
-
 # install mix dependencies
+COPY mix.exs mix.lock ./
 RUN mix deps.get --only $MIX_ENV
 
-# compile dependencies
+# compile dependencies against the compile-time config only, so that editing
+# runtime.exs or application code does not invalidate this layer
+RUN mkdir config
+COPY config/config.exs config/${MIX_ENV}.exs config/
 RUN mix deps.compile
 
-# compile project
+COPY priv priv
+COPY lib lib
+
+# compile project. must precede assets.deploy: the phoenix_live_view compiler
+# emits phoenix-colocated/folio/colocated.css, which assets/css/app.css imports
 RUN mix compile
 
-# Compile assets
+COPY assets assets
+
+# compile assets (tailwind + esbuild + phx.digest over priv/static)
 RUN mix assets.deploy
+
+# runtime config is only read at boot, so it comes after compilation
+COPY config/runtime.exs config/
+
+# release overlays: rel/overlays/bin/{server,migrate}
+COPY rel rel
 
 # assemble release
 RUN mix release $RELEASE_NAME
@@ -67,6 +82,7 @@ ARG MIX_ENV
 RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates
 
 ENV USER="elixir"
+ENV LANG=C.UTF-8
 
 WORKDIR "/app"
 
@@ -81,7 +97,6 @@ RUN \
   -G "${USER}" \
   -h "/home/${USER}" \
   -D "${USER}" \
-  && su "${USER}" \
   && chown "${USER}":"${USER}" /app
 
 # run as user

@@ -1,8 +1,10 @@
 _build/
 .claude/
+.devcontainer/
+.docker/
 .elixir_ls/
+.git/
 deps/
-docker/
 docs/
 node_modules/
 

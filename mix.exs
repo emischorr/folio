@@ -11,7 +11,8 @@ defmodule Folio.MixProject do
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      releases: releases()
     ]
   end
 
@@ -105,6 +106,14 @@ defmodule Folio.MixProject do
         "format",
         "credo",
         "test"
+      ]
+    ]
+  end
+
+  defp releases do
+    [
+      folio: [
+        include_executables_for: [:unix]
       ]
     ]
   end

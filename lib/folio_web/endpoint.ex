@@ -12,8 +12,8 @@ defmodule FolioWeb.Endpoint do
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]],
-    longpoll: [connect_info: [session: @session_options]]
+    websocket: [connect_info: [session: {__MODULE__, :session_options, []}]],
+    longpoll: [connect_info: [session: {__MODULE__, :session_options, []}]]
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -50,6 +50,21 @@ defmodule FolioWeb.Endpoint do
 
   plug Plug.MethodOverride
   plug Plug.Head
-  plug Plug.Session, @session_options
+  plug :session
   plug FolioWeb.Router
+
+  @doc """
+  Session cookie options, with `secure` following the configured URL scheme.
+
+  Read at runtime rather than baked in, so the same release works over plain HTTP
+  and behind a TLS-terminating proxy.
+  """
+  @spec session_options() :: keyword()
+  def session_options do
+    Keyword.put(@session_options, :secure, Application.get_env(:folio, :https_url?, false))
+  end
+
+  defp session(conn, _opts) do
+    Plug.Session.call(conn, Plug.Session.init(session_options()))
+  end
 end

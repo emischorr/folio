@@ -22,10 +22,9 @@ end
 
 # PREVIEW_PORT is exported by CodeLead for the previewed dev server; PORT still
 # wins, and both unset leaves the usual 4000.
-config :folio, FolioWeb.Endpoint,
-  http: [
-    port: String.to_integer(System.get_env("PORT") || System.get_env("PREVIEW_PORT") || "4000")
-  ]
+port = String.to_integer(System.get_env("PORT") || System.get_env("PREVIEW_PORT") || "4000")
+
+config :folio, FolioWeb.Endpoint, http: [port: port]
 
 # Optional CoinGecko demo API key: raises the public rate limit from ~5-15
 # to 100 requests/minute. See README "Data sources".
@@ -82,12 +81,47 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  # Blank counts as unset: a compose file that passes a variable through
+  # unconditionally would otherwise leave it set to "".
+  env = fn name ->
+    case System.get_env(name) do
+      nil -> nil
+      "" -> nil
+      value -> value
+    end
+  end
+
+  # Folio serves plain HTTP: reach it directly by IP or hostname, or put your own
+  # reverse proxy in front to terminate TLS. SCHEME and URL_PORT only describe how a
+  # browser reaches it, so generated links and the session cookie come out right --
+  # the app itself always listens on plain HTTP (PORT).
+  host = env.("PHX_HOST") || "localhost"
+  scheme = env.("SCHEME") || "http"
+
+  url_port =
+    case env.("URL_PORT") do
+      nil -> if scheme == "https", do: 443, else: port
+      value -> String.to_integer(value)
+    end
+
+  # Phoenix compares only the host of the websocket Origin against url[:host], so
+  # PHX_HOST has to match what is typed in the address bar. CHECK_ORIGIN is the escape
+  # hatch when Folio is reached under several names: a comma-separated list of allowed
+  # origins, or "false" to skip the check entirely.
+  check_origin =
+    case env.("CHECK_ORIGIN") do
+      nil -> true
+      "true" -> true
+      "false" -> false
+      list -> list |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+    end
 
   config :folio, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :folio, :https_url?, scheme == "https"
 
   config :folio, FolioWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: host, port: url_port, scheme: scheme],
+    check_origin: check_origin,
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
@@ -97,37 +131,15 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 
-  # ## SSL Support
+  # ## TLS
   #
-  # To get SSL working, you will need to add the `https` key
-  # to your endpoint configuration:
+  # Folio does not terminate TLS itself. Put a reverse proxy (Caddy, nginx, Traefik,
+  # ...) in front of it, point that proxy at PORT over plain HTTP, and set
+  # SCHEME=https so Folio knows how browsers reach it. The proxy also owns the
+  # http -> https redirect and any HSTS header.
   #
-  #     config :folio, FolioWeb.Endpoint,
-  #       https: [
-  #         ...,
-  #         port: 443,
-  #         cipher_suite: :strong,
-  #         keyfile: System.get_env("SOME_APP_SSL_KEY_PATH"),
-  #         certfile: System.get_env("SOME_APP_SSL_CERT_PATH")
-  #       ]
-  #
-  # The `cipher_suite` is set to `:strong` to support only the
-  # latest and more secure SSL ciphers. This means old browsers
-  # and clients may not be supported. You can set it to
-  # `:compatible` for wider support.
-  #
-  # `:keyfile` and `:certfile` expect an absolute path to the key
-  # and cert in disk or a relative path inside priv, for example
-  # "priv/ssl/server.key". For all supported SSL configuration
-  # options, see https://plug.hexdocs.pm/Plug.SSL.html#configure/1
-  #
-  # We also recommend setting `force_ssl` in your config/prod.exs,
-  # ensuring no data is ever sent via http, always redirecting to https:
-  #
-  #     config :folio, FolioWeb.Endpoint,
-  #       force_ssl: [hsts: true]
-  #
-  # Check `Plug.SSL` for all available options in `force_ssl`.
+  # URL_PORT overrides the port used in generated URLs when the proxy listens on
+  # something other than 443 (https) or PORT (http).
 
   # ## Configuring the mailer
   #
