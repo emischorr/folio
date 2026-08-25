@@ -1,0 +1,13 @@
+_build/
+.claude/
+.elixir_ls/
+deps/
+docker/
+docs/
+node_modules/
+
+# Rebuilt inside the image by `mix assets.deploy`.
+priv/static/assets/
+
+test/
+erl_crash.dump
