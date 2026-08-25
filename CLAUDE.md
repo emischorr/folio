@@ -27,9 +27,18 @@ served by Bandit and backed by PostgreSQL through `Folio.Repo`.
 - `Folio` — domain and business logic (contexts).
 - `FolioWeb` — web layer.
 
-It is currently a bare `phx.new` scaffold: no contexts, schemas, migrations or LiveViews
-exist yet, and the only route is `GET /` → `FolioWeb.PageController`. Most structure is
-still to be built.
+It is a single-portfolio investment tracker: manually entered buy/sell transactions for
+crypto, stocks and ETFs, with prices and FX rates fetched in the background and a
+dashboard showing value/profit over time and per-asset holdings.
+
+Contexts: `Accounts` (one bootstrapped Admin, no login flow), `Portfolios` (portfolios,
+members, transactions), `Assets` (shared instruments + resolver), `MarketData` (daily
+closes, intraday ticks, FX rates, Oban workers), `Analytics` (the read side — series,
+summaries, holdings). Plus `Bootstrap` (idempotent boot-time setup) and `Release`.
+
+The web layer is a single `FolioWeb.DashboardLive`; all four routes (`/`,
+`/assets/:asset_id`, `/transactions/new`, `/transactions/:id/edit`) are live actions on
+it, so window/mode/currency selections survive navigation.
 
 ## Commands
 
@@ -52,18 +61,19 @@ format → credo → test, all under `MIX_ENV=test`.
     docker compose up -d postgresql
 
 Starts Postgres 16 on `:5432` with the credentials `config/dev.exs` and `config/test.exs`
-already expect (`postgres` / `postgres`). Data persists in `./docker/postgres`.
+already expect (`postgres` / `postgres`). Data persists in `.docker/postgres`.
 
 ## Architecture
 
-- `lib/folio/` — contexts and domain logic. Today only `application.ex` (supervision tree),
-  `repo.ex`, `mailer.ex`.
-- `lib/folio_web/` — `router.ex`, `endpoint.ex`, `controllers/`, `components/`
-  (`core_components.ex`, `layouts.ex`).
+- `lib/folio/` — contexts and domain logic: `accounts/`, `portfolios/`, `assets/`,
+  `market_data/` (with `workers/` for the Oban jobs), `analytics/`, plus `clients/`
+  (behaviour-backed market data providers), `application.ex`, `bootstrap.ex`, `repo.ex`.
+- `lib/folio_web/` — `router.ex`, `endpoint.ex`, `user_auth.ex`, `live/dashboard_live.ex`,
+  `controllers/`, `components/` (`core_components.ex`, `layouts.ex`).
 - `lib/folio_web.ex` — the `use FolioWeb, :controller | :html | :live_view | ...` entrypoint.
 - `config/` — `config.exs` (shared) → `dev|test|prod.exs`, then `runtime.exs`.
   `runtime.exs` is the only place environment variables are read.
-- `priv/repo/migrations/` — migrations (none yet). `priv/static/` — served assets.
+- `priv/repo/migrations/` — migrations. `priv/static/` — served assets.
 - `assets/css/app.css`, `assets/js/app.js` — the only two bundles.
 - `test/support/` — `ConnCase` and `DataCase` (Ecto SQL Sandbox).
 

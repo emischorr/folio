@@ -1,45 +1,107 @@
 # Folio
 
-To start your Phoenix server:
+**A self-hosted portfolio tracker for crypto, stocks and ETFs.** You enter your
+transactions; Folio fetches prices and exchange rates in the background and shows
+what your portfolio is worth over time. Everything stays on your server.
 
-* Run `mix setup` to install and setup dependencies
-* Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server`
+**What it isn't:** no ads, no tracking, no sign-up, no premium tier, no news feed,
+no social features, no broker linking. One portfolio, one chart, one list of
+holdings — and nothing else competing for your attention.
 
-Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
+![Folio dashboard](docs/images/folio_dashboard.png)
 
-Ready to run in production? Please [check our deployment guides](https://phoenix.hexdocs.pm/deployment.html).
+## What it does
+
+- **Manual transactions** — buy or sell, with asset, date and time, quantity,
+  price per unit, fee and currency. Edit or delete any of them later.
+- **Asset lookup** — autocomplete across your own assets, CoinGecko and Yahoo
+  Finance, with a manual-ticker fallback for when remote search is unavailable.
+- **Value and profit over time** — an interactive chart over 1d, 1w, 1m, YTD, 1y
+  or max, with a Value ↔ Profit toggle.
+- **Per-asset holdings** — quantity, current value, change over the selected
+  window and a sparkline; click through for that asset's transaction history.
+- **Currency switch** — view everything in EUR or USD, converted per timestamp
+  through daily ECB rates.
+- **Honest numbers** — cost basis is locked in the portfolio's base currency at
+  execution time, and money paid in during a window is not counted as profit.
+- **Live updates** — background price and FX refreshes push straight into the
+  open page. No reloading.
+- **Light, dark or system theme.**
+
+## Status
+
+v0.1, and built for a single person on a single machine. One portfolio, one
+bootstrapped user, and no login flow yet — the session simply acts as the `Admin`
+user. There is no CSV or broker import, no dividend tracking, and no JSON API.
+
+## Quick start
+
+Requires Elixir 1.20 / OTP 28 (see `.tool-versions`) and Docker for PostgreSQL.
+
+```sh
+docker compose up -d postgresql   # Postgres 16 on :5432
+mix setup                         # deps, database, seeds, assets
+mix phx.server                    # http://localhost:4000
+```
+
+`mix setup` seeds a sample portfolio — Bitcoin, a EUR-quoted MSCI World ETF and
+NVIDIA in USD — with two years of transactions and locally generated price and FX
+history. A fresh checkout therefore opens on a populated dashboard without any
+external API being touched.
+
+## Configuration
+
+Environment variables are read in `config/runtime.exs`, and nowhere else.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ADMIN_PASSWORD` | `admin` | Password for the bootstrapped user, hashed once on first boot |
+| `COINGECKO_API_KEY` | — | Optional free demo key; raises the crypto rate limit to 100 req/min |
+| `DATABASE_URL` | — | Required in production |
+| `SECRET_KEY_BASE` | — | Required in production |
+| `PHX_HOST` / `PORT` | `example.com` / `4000` | Public hostname and listen port |
 
 ## External data sources
 
-Prices and FX rates are fetched in the background (Oban). Every provider sits
-behind a behaviour, so swapping one means implementing the behaviour and
-changing one line in `config :folio, :clients`.
+Prices and FX rates are fetched in the background by Oban workers. Every provider
+sits behind a behaviour, so swapping one means implementing that behaviour and
+changing a single line in `config :folio, :clients`.
 
-| Data | Provider | Endpoint | Limits / caveats |
-|---|---|---|---|
-| Crypto search, history, current prices | [CoinGecko](https://www.coingecko.com/en/api) (`Folio.Clients.CoinGecko`) | `api.coingecko.com/api/v3` | Keyless: ~5-15 requests/min and history capped at ~365 days. A free demo key via the `COINGECKO_API_KEY` env var raises the limit to 100/min, 10k/month. |
-| Stock/ETF search, history, current prices | Yahoo Finance, unofficial (`Folio.Clients.Yahoo`) | `query1.finance.yahoo.com` | Keyless but requires a browser User-Agent (the client sends one). Search results carry **no currency** - it is read from the chart endpoint's metadata. Unofficial and the most likely to break; occasional 429/999 responses are snoozed and retried. |
-| FX rates (daily, EUR pivot) | [Frankfurter](https://frankfurter.dev) / ECB (`Folio.Clients.Frankfurter`) | `api.frankfurter.dev/v1` | Keyless, business days only - weekend gaps are expected and handled by "latest at or before" lookups. |
+| Data | Provider | Limits and caveats |
+|---|---|---|
+| Crypto search, history, prices | [CoinGecko](https://www.coingecko.com/en/api) — `Folio.Clients.CoinGecko` | Keyless: ~5–15 req/min, history capped at ~365 days. A free demo key raises this to 100/min. |
+| Stock and ETF search, history, prices | Yahoo Finance, unofficial — `Folio.Clients.Yahoo` | Keyless but needs a browser User-Agent (the client sends one). Search results carry no currency, so it is read from the chart endpoint's metadata. Unofficial, and the most likely to break; rate-limit responses are snoozed and retried. |
+| FX rates (daily, EUR pivot) | [Frankfurter](https://frankfurter.dev) / ECB — `Folio.Clients.Frankfurter` | Keyless, business days only — weekend gaps are expected and resolved by "latest rate at or before" lookups. |
 
-Stooq was considered for equities but rejected: it now sits behind a
-JavaScript proof-of-work check and cannot be used server-side.
+Stooq was considered for equities and rejected: it now sits behind a JavaScript
+proof-of-work check and cannot be used server-side.
 
 To swap a provider, implement `Folio.Clients.CryptoClient`,
-`Folio.Clients.EquityClient`, or `Folio.Clients.FxClient` and point the
-matching key in `config :folio, :clients` (in `config/config.exs`) at your
-module. Tests stub the HTTP layer with `Req.Test`, so no test touches the
-network.
+`Folio.Clients.EquityClient` or `Folio.Clients.FxClient` and point the matching key
+in `config :folio, :clients` (in `config/config.exs`) at your module.
 
-## Dev data
+## Development
 
-`mix ecto.setup` (and `mix ecto.reset`) seed a sample portfolio - BTC, a
-EUR-quoted ETF, and NVDA in USD - with two years of transactions and locally
-generated price/FX history, so nothing hits the external APIs.
+```sh
+mix test        # tests; creates and migrates the test database first
+mix precommit   # compile --warnings-as-errors, unused deps, format, credo, test
+mix ecto.reset  # drop, create, migrate, reseed
+```
 
-## Learn more
+Tests stub the HTTP layer with `Req.Test` against recorded fixtures, so no test
+ever touches the network.
 
-* Official website: https://www.phoenixframework.org/
-* Guides: https://phoenix.hexdocs.pm/overview.html
-* Docs: https://phoenix.hexdocs.pm
-* Forum: https://elixirforum.com/c/phoenix-forum
-* Source: https://github.com/phoenixframework/phoenix
+## Built with
+
+- **Phoenix 1.8** and **LiveView** on Bandit, backed by **PostgreSQL**, with
+  **Oban** for background price and FX jobs.
+- **Tailwind v4** and daisyUI — and **no npm**: there is no `package.json` and no
+  `node_modules`. Assets are built by the `tailwind` and `esbuild` Mix tasks.
+- Charts use TradingView's [lightweight-charts](https://github.com/tradingview/lightweight-charts)
+  (Apache-2.0), vendored in `assets/vendor/`. Sparklines are server-rendered SVG.
+- Every monetary value is a `Decimal` end to end — JSON is decoded with
+  `floats: :decimals` so floating-point values never enter the system.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
