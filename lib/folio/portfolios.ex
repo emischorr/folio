@@ -71,15 +71,40 @@ defmodule Folio.Portfolios do
     asset = changeset |> get_field(:asset_id) |> get_asset()
 
     with {:ok, transaction} <- changeset |> default_currency(asset) |> Repo.insert() do
-      :ok =
-        MarketData.ensure_history(
-          transaction.asset_id,
-          DateTime.to_date(transaction.executed_at),
-          asset.quote_currency
-        )
-
+      ensure_txn_history(transaction)
       {:ok, transaction}
     end
+  end
+
+  @doc "Fetches a transaction by id scoped to the portfolio, raising if absent."
+  @spec get_transaction!(pos_integer(), pos_integer()) :: Transaction.t()
+  def get_transaction!(portfolio_id, id) do
+    Repo.get_by!(Transaction, id: id, portfolio_id: portfolio_id)
+  end
+
+  @doc "Changeset for creating or editing a transaction (form validation)."
+  @spec change_transaction(Transaction.t(), map()) :: Ecto.Changeset.t()
+  def change_transaction(%Transaction{} = transaction, attrs \\ %{}) do
+    Transaction.changeset(transaction, attrs)
+  end
+
+  @doc """
+  Updates a transaction. Re-runs the history coverage check afterwards, so
+  moving `executed_at` earlier still gets price/FX data backfilled.
+  """
+  @spec update_transaction(Transaction.t(), map()) ::
+          {:ok, Transaction.t()} | {:error, Ecto.Changeset.t()}
+  def update_transaction(%Transaction{} = transaction, attrs) do
+    with {:ok, updated} <- transaction |> Transaction.changeset(attrs) |> Repo.update() do
+      ensure_txn_history(updated)
+      {:ok, updated}
+    end
+  end
+
+  @doc "Whether the portfolio has any transactions."
+  @spec any_transactions?(pos_integer()) :: boolean()
+  def any_transactions?(portfolio_id) do
+    Repo.exists?(from t in Transaction, where: t.portfolio_id == ^portfolio_id)
   end
 
   @doc "Transactions of a portfolio, oldest first. Options: `:asset_id`."
@@ -105,6 +130,17 @@ defmodule Folio.Portfolios do
 
   defp get_asset(nil), do: nil
   defp get_asset(asset_id), do: Assets.get_asset(asset_id)
+
+  defp ensure_txn_history(%Transaction{} = transaction) do
+    %{quote_currency: quote_currency} = Assets.get_asset!(transaction.asset_id)
+
+    :ok =
+      MarketData.ensure_history(
+        transaction.asset_id,
+        DateTime.to_date(transaction.executed_at),
+        quote_currency
+      )
+  end
 
   defp default_currency(changeset, asset) do
     case {get_field(changeset, :currency), asset} do

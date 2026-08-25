@@ -27,12 +27,30 @@ defmodule FolioWeb.ConnCase do
       # Import conveniences for testing with connections
       import Plug.Conn
       import Phoenix.ConnTest
+      import Phoenix.LiveViewTest
       import FolioWeb.ConnCase
+
+      use Oban.Testing, repo: Folio.Repo
     end
   end
 
   setup tags do
     Folio.DataCase.setup_sandbox(tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}
+  end
+
+  @doc """
+  Creates the default Admin user with a portfolio, as `Folio.Bootstrap` would
+  in production (it is disabled in test). Returns `%{user: user, portfolio:
+  portfolio}` for use as a setup callback.
+  """
+  def bootstrap_default_user(_context) do
+    user = Folio.Accounts.ensure_admin("secret")
+
+    portfolio =
+      Folio.Portfolios.default_portfolio_for(user.id) ||
+        elem(Folio.Portfolios.create_portfolio(%{name: "Portfolio"}, user.id), 1)
+
+    %{user: user, portfolio: portfolio}
   end
 end

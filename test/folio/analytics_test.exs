@@ -90,21 +90,62 @@ defmodule Folio.AnalyticsTest do
     assert Decimal.eq?(List.last(series).value, "280")
   end
 
-  test "holdings lists quantity, value, and overall profit per asset" do
+  test "holdings lists quantity, value, window change, and sparkline series per asset" do
     %{portfolio: portfolio, bitcoin: bitcoin, stock: stock} = seeded_portfolio()
 
-    holdings = Analytics.holdings(portfolio.id, "EUR", now: @now)
+    holdings = Analytics.holdings(portfolio.id, :max, "EUR", now: @now)
 
     assert [first, second] = holdings
     assert first.asset_id == bitcoin.id
+    assert first.kind == :crypto
     assert Decimal.eq?(first.quantity, "2")
     assert Decimal.eq?(first.value, "280")
-    assert Decimal.eq?(first.profit_abs, "80")
-    assert Decimal.eq?(first.profit_pct, "40")
+    assert Decimal.eq?(first.change_abs, "80")
+    assert Decimal.eq?(first.change_pct, "40")
+    assert first.has_data?
+    assert length(first.series) == 5
+    assert Decimal.eq?(List.last(first.series).value, "280")
 
     assert second.asset_id == stock.id
     assert Decimal.eq?(second.value, "200")
-    assert Decimal.eq?(second.profit_abs, "0")
+    assert Decimal.eq?(second.change_abs, "0")
+    assert Decimal.eq?(second.change_pct, "0")
+  end
+
+  test "holdings marks assets without stored prices and omits sold-out positions" do
+    %{portfolio: portfolio, bitcoin: bitcoin} = seeded_portfolio()
+    etf = etf_asset_fixture()
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: etf.id,
+      executed_at: ~U[2025-01-09 10:00:00Z],
+      quantity: "1",
+      price_per_unit: "10"
+    })
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      type: :sell,
+      executed_at: ~U[2025-01-09 11:00:00Z],
+      quantity: "2",
+      price_per_unit: "130"
+    })
+
+    holdings = Analytics.holdings(portfolio.id, :max, "EUR", now: @now)
+
+    refute Enum.any?(holdings, &(&1.asset_id == bitcoin.id))
+    assert %{has_data?: false, value: value} = Enum.find(holdings, &(&1.asset_id == etf.id))
+    assert Decimal.eq?(value, "0")
+  end
+
+  test "convert translates via stored FX rates and passes same-currency through" do
+    seed_fx_rates("USD", ~D[2025-01-06], ~D[2025-01-10], "1.25", "0")
+
+    assert Decimal.eq?(Analytics.convert(Decimal.new("100"), "EUR", "EUR", @now), "100")
+    assert Decimal.eq?(Analytics.convert(Decimal.new("125"), "USD", "EUR", @now), "100")
+    assert Analytics.convert(Decimal.new(1), "USD", "CHF", @now) == nil
   end
 
   test "an empty portfolio yields empty series and a zero summary" do

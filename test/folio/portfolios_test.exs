@@ -160,6 +160,66 @@ defmodule Folio.PortfoliosTest do
       assert Portfolios.list_transactions(portfolio.id) == []
     end
 
+    test "get_transaction!/2 is scoped to the portfolio" do
+      portfolio = portfolio_fixture()
+      other = portfolio_fixture()
+      asset = crypto_asset_fixture()
+      transaction = transaction_fixture(%{portfolio_id: portfolio.id, asset_id: asset.id})
+
+      assert Portfolios.get_transaction!(portfolio.id, transaction.id).id == transaction.id
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Portfolios.get_transaction!(other.id, transaction.id)
+      end
+    end
+
+    test "change_transaction/2 validates without persisting" do
+      changeset = Portfolios.change_transaction(%Folio.Portfolios.Transaction{}, %{quantity: "0"})
+
+      refute changeset.valid?
+      assert %{quantity: [_message]} = errors_on(changeset)
+    end
+
+    test "update_transaction/2 persists changes and backfills newly uncovered history" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+
+      transaction =
+        transaction_fixture(%{
+          portfolio_id: portfolio.id,
+          asset_id: asset.id,
+          executed_at: ~U[2025-06-01 12:00:00Z]
+        })
+
+      assert {:ok, updated} =
+               Portfolios.update_transaction(transaction, %{
+                 quantity: "3",
+                 executed_at: ~U[2025-02-01 12:00:00Z]
+               })
+
+      assert Decimal.eq?(updated.quantity, "3")
+      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id, from: "2025-02-01"}
+    end
+
+    test "update_transaction/2 returns the changeset on invalid input" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+      transaction = transaction_fixture(%{portfolio_id: portfolio.id, asset_id: asset.id})
+
+      assert {:error, changeset} = Portfolios.update_transaction(transaction, %{quantity: "0"})
+      assert %{quantity: [_message]} = errors_on(changeset)
+    end
+
+    test "any_transactions?/1 reflects whether the portfolio has entries" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+
+      refute Portfolios.any_transactions?(portfolio.id)
+
+      transaction_fixture(%{portfolio_id: portfolio.id, asset_id: asset.id})
+      assert Portfolios.any_transactions?(portfolio.id)
+    end
+
     test "transaction_currencies/0 returns distinct currencies" do
       portfolio = portfolio_fixture()
       asset = crypto_asset_fixture()

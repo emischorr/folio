@@ -20,7 +20,12 @@ defmodule FolioWeb.Router do
   scope "/", FolioWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live_session :default, on_mount: [{FolioWeb.UserAuth, :default}] do
+      live "/", DashboardLive, :index
+      live "/assets/:asset_id", DashboardLive, :asset
+      live "/transactions/new", DashboardLive, :new
+      live "/transactions/:id/edit", DashboardLive, :edit
+    end
   end
 
   # Other scopes may use custom stacks.

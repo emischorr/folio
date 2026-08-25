@@ -35,3 +35,4 @@ folio-*.tar
 npm-debug.log
 /assets/node_modules/
 
+.docker

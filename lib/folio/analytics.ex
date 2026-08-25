@@ -23,6 +23,19 @@ defmodule Folio.Analytics do
   @zero Decimal.new(0)
   @intraday_windows [:"1d", :"1w"]
 
+  @type holding :: %{
+          asset_id: pos_integer(),
+          symbol: String.t(),
+          name: String.t(),
+          kind: Assets.Asset.kind(),
+          quantity: Decimal.t(),
+          value: Decimal.t(),
+          change_abs: Decimal.t(),
+          change_pct: Decimal.t() | nil,
+          series: [%{at: DateTime.t(), value: Decimal.t()}],
+          has_data?: boolean()
+        }
+
   @doc "Value at each grid point of the window, in the display currency."
   @spec value_series(pos_integer(), Grid.window(), String.t(), keyword()) ::
           [%{at: DateTime.t(), value: Decimal.t()}]
@@ -51,54 +64,76 @@ defmodule Folio.Analytics do
     {dataset, grid, now} = prepare(portfolio_id, window, display_currency, opts)
     value_now = Engine.value_at(dataset, now, display_currency)
 
-    case grid do
-      [] ->
-        %{value: value_now, change_abs: @zero, change_pct: nil}
-
-      [window_start | _rest] ->
-        value_start = Engine.value_at(dataset, window_start, display_currency)
-        net_cashflow = Engine.net_cashflow(dataset, window_start, now, display_currency)
-        change_abs = value_now |> Decimal.sub(value_start) |> Decimal.sub(net_cashflow)
-
-        %{
-          value: value_now,
-          change_abs: change_abs,
-          change_pct: percentage(change_abs, Decimal.add(value_start, net_cashflow))
-        }
-    end
+    dataset
+    |> window_change(grid, value_now, now, display_currency)
+    |> Map.put(:value, value_now)
   end
 
   @doc """
-  Current holdings per asset: quantity, current value, and overall profit
-  (absolute and percentage vs cost basis), in the display currency. Assets
-  with zero quantity and zero cost basis are omitted; sorted by value,
-  largest first.
+  Current holdings per asset with the change over the window and the value
+  series for the same window (sparklines), in the display currency. Assets
+  with zero quantity and zero value are omitted; sorted by value, largest
+  first. `has_data?` is false while an asset has no stored prices yet
+  (backfill pending) - its value contributions are zero until data arrives.
   """
-  @spec holdings(pos_integer(), String.t(), keyword()) :: [map()]
-  def holdings(portfolio_id, display_currency, opts \\ []) do
-    {dataset, _grid, now} = prepare(portfolio_id, :max, display_currency, opts)
+  @spec holdings(pos_integer(), Grid.window(), String.t(), keyword()) :: [holding()]
+  def holdings(portfolio_id, window, display_currency, opts \\ []) do
+    {dataset, grid, now} = prepare(portfolio_id, window, display_currency, opts)
     quantities = Engine.holdings_at(dataset, now)
 
     dataset.assets
-    |> Enum.map(fn {asset_id, %{symbol: symbol, name: name}} ->
+    |> Enum.map(fn {asset_id, %{symbol: symbol, name: name, kind: kind}} ->
       scoped = Dataset.scope_to_asset(dataset, asset_id)
-      quantity = Map.get(quantities, asset_id, @zero)
       value = Engine.value_at(scoped, now, display_currency)
-      cost_basis = Engine.cost_basis_at(scoped, now, display_currency)
-      profit_abs = Decimal.sub(value, cost_basis)
 
       %{
         asset_id: asset_id,
         symbol: symbol,
         name: name,
-        quantity: quantity,
+        kind: kind,
+        quantity: Map.get(quantities, asset_id, @zero),
         value: value,
-        profit_abs: profit_abs,
-        profit_pct: percentage(profit_abs, cost_basis)
+        series: Engine.value_series(scoped, grid, display_currency),
+        has_data?: Map.get(dataset.prices, asset_id, []) != []
       }
+      |> Map.merge(window_change(scoped, grid, value, now, display_currency))
     end)
     |> Enum.reject(&(Decimal.eq?(&1.quantity, @zero) and Decimal.eq?(&1.value, @zero)))
     |> Enum.sort_by(& &1.value, {:desc, Decimal})
+  end
+
+  @doc """
+  Converts an amount between currencies using stored EUR-pivot FX rates at
+  `at`. Nil when a needed rate is entirely unknown.
+  """
+  @spec convert(Decimal.t(), String.t(), String.t(), DateTime.t()) :: Decimal.t() | nil
+  def convert(amount, from_currency, to_currency, at \\ DateTime.utc_now())
+
+  def convert(amount, currency, currency, _at), do: amount
+
+  def convert(amount, from_currency, to_currency, at) do
+    fx =
+      [from_currency, to_currency]
+      |> Enum.uniq()
+      |> Enum.reject(&(&1 == "EUR"))
+      |> Map.new(&{&1, currency_rates(&1)})
+
+    Engine.convert(amount, from_currency, to_currency, fx, at)
+  end
+
+  defp window_change(_dataset, [], _value_now, _now, _display_currency) do
+    %{change_abs: @zero, change_pct: nil}
+  end
+
+  defp window_change(dataset, [window_start | _rest], value_now, now, display_currency) do
+    value_start = Engine.value_at(dataset, window_start, display_currency)
+    net_cashflow = Engine.net_cashflow(dataset, window_start, now, display_currency)
+    change_abs = value_now |> Decimal.sub(value_start) |> Decimal.sub(net_cashflow)
+
+    %{
+      change_abs: change_abs,
+      change_pct: percentage(change_abs, Decimal.add(value_start, net_cashflow))
+    }
   end
 
   defp prepare(portfolio_id, window, display_currency, opts) do
@@ -128,8 +163,10 @@ defmodule Folio.Analytics do
   end
 
   defp asset_entry(asset_id) do
-    %{symbol: symbol, name: name, quote_currency: quote_currency} = Assets.get_asset!(asset_id)
-    %{symbol: symbol, name: name, quote_currency: quote_currency}
+    %{symbol: symbol, name: name, kind: kind, quote_currency: quote_currency} =
+      Assets.get_asset!(asset_id)
+
+    %{symbol: symbol, name: name, kind: kind, quote_currency: quote_currency}
   end
 
   defp txn_entry(txn) do
@@ -172,12 +209,14 @@ defmodule Folio.Analytics do
     (quote_currencies ++ txn_currencies ++ [base_currency, display_currency])
     |> Enum.uniq()
     |> Enum.reject(&(&1 == "EUR"))
-    |> Map.new(fn currency ->
-      series =
-        for %{date: date, rate: rate} <- MarketData.fx_rates(currency), do: {midnight(date), rate}
+    |> Map.new(&{&1, currency_rates(&1)})
+  end
 
-      {currency, Enum.sort_by(series, &elem(&1, 0), {:desc, DateTime})}
-    end)
+  defp currency_rates(currency) do
+    series =
+      for %{date: date, rate: rate} <- MarketData.fx_rates(currency), do: {midnight(date), rate}
+
+    Enum.sort_by(series, &elem(&1, 0), {:desc, DateTime})
   end
 
   defp earliest_date([]), do: nil

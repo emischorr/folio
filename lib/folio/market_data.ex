@@ -20,6 +20,10 @@ defmodule Folio.MarketData do
   @spec intraday_retention_days() :: pos_integer()
   def intraday_retention_days, do: @intraday_retention_days
 
+  @doc "PubSub topic where `{:prices_updated, asset_id}` / `{:fx_updated, currency}` are broadcast after upserts."
+  @spec topic() :: String.t()
+  def topic, do: "market_data"
+
   @doc "Idempotently stores daily closes. `entries` is a list of `%{date: Date.t(), price: Decimal.t()}`."
   @spec upsert_daily_prices(pos_integer(), [map()]) :: :ok
   def upsert_daily_prices(asset_id, entries) do
@@ -27,10 +31,13 @@ defmodule Folio.MarketData do
       for %{date: date, price: price} <- entries,
           do: %{asset_id: asset_id, date: date, price: price}
 
-    insert_in_batches(DailyPrice, rows,
-      on_conflict: {:replace, [:price]},
-      conflict_target: [:asset_id, :date]
-    )
+    :ok =
+      insert_in_batches(DailyPrice, rows,
+        on_conflict: {:replace, [:price]},
+        conflict_target: [:asset_id, :date]
+      )
+
+    broadcast_unless_empty(rows, {:prices_updated, asset_id})
   end
 
   @doc "Idempotently stores intraday ticks. `entries` is a list of `%{at: DateTime.t(), price: Decimal.t()}`."
@@ -41,10 +48,13 @@ defmodule Folio.MarketData do
         %{asset_id: asset_id, at: DateTime.truncate(at, :second), price: price}
       end
 
-    insert_in_batches(IntradayPrice, rows,
-      on_conflict: {:replace, [:price]},
-      conflict_target: [:asset_id, :at]
-    )
+    :ok =
+      insert_in_batches(IntradayPrice, rows,
+        on_conflict: {:replace, [:price]},
+        conflict_target: [:asset_id, :at]
+      )
+
+    broadcast_unless_empty(rows, {:prices_updated, asset_id})
   end
 
   @doc "Idempotently stores daily EUR-pivot rates. `entries` is a list of `%{date: Date.t(), rate: Decimal.t()}`."
@@ -53,10 +63,13 @@ defmodule Folio.MarketData do
     rows =
       for %{date: date, rate: rate} <- entries, do: %{currency: currency, date: date, rate: rate}
 
-    insert_in_batches(FxRate, rows,
-      on_conflict: {:replace, [:rate]},
-      conflict_target: [:currency, :date]
-    )
+    :ok =
+      insert_in_batches(FxRate, rows,
+        on_conflict: {:replace, [:rate]},
+        conflict_target: [:currency, :date]
+      )
+
+    broadcast_unless_empty(rows, {:fx_updated, currency})
   end
 
   @doc "Daily closes for an asset, oldest first. Options: `:from` date."
@@ -222,6 +235,12 @@ defmodule Folio.MarketData do
   defp maybe_from(query, :at, from), do: where(query, [row], row.at >= ^from)
 
   defp midnight_utc(date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+
+  defp broadcast_unless_empty([], _message), do: :ok
+
+  defp broadcast_unless_empty(_rows, message) do
+    Phoenix.PubSub.broadcast(Folio.PubSub, topic(), message)
+  end
 
   defp insert_in_batches(schema, rows, opts) do
     rows

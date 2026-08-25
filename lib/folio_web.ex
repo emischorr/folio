@@ -86,6 +86,7 @@ defmodule FolioWeb do
       import Phoenix.HTML
       # Core UI components
       import FolioWeb.CoreComponents
+      import FolioWeb.Format
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS
