@@ -1,8 +1,15 @@
 // Renders the dashboard's main portfolio chart with TradingView
 // lightweight-charts (vendored, Apache-2.0). The LiveView pushes
-// "chart:data" events with {points: [{time, value}], mode}; colors follow
-// the active daisyUI theme by resolving its CSS tokens at runtime.
-import {createChart, AreaSeries, LineStyle} from "../vendor/lightweight-charts.mjs"
+// "chart:data" events with {points: [{time, value}], mode, currency};
+// colors follow the active daisyUI theme by resolving its CSS tokens at
+// runtime.
+import {
+  createChart,
+  AreaSeries,
+  LineStyle,
+  CrosshairMode,
+  TrackingModeExitMode,
+} from "../vendor/lightweight-charts.mjs"
 
 // oklch(...) from the theme tokens isn't universally understood by canvas
 // APIs, so resolve any CSS color to rgb components via a 1px canvas paint.
@@ -27,30 +34,94 @@ function themeColors(el) {
   return {
     line: rgba(primary, 1),
     areaTop: rgba(primary, 0.35),
-    text: rgba(content, 0.5),
+    axisText: rgba(content, 0.35),
+    crosshair: rgba(content, 0.25),
     zero: rgba(content, 0.3),
   }
+}
+
+// Mirrors FolioWeb.Format.money/2's symbol table and "sign + symbol + space
+// + grouped" shape, so axis ticks and the tooltip read exactly like the
+// rest of the UI.
+const CURRENCY_SYMBOLS = {EUR: "€", USD: "$"}
+
+function formatMoney(value, currency) {
+  const symbol = CURRENCY_SYMBOLS[currency] ?? currency
+  const sign = value < 0 ? "−" : ""
+  const grouped = Math.abs(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+  return `${sign}${symbol} ${grouped}`
+}
+
+// Grid points are either stepped every 15min/1h (1d/1w windows) or one per
+// calendar day (every other window) — inferred from spacing rather than a
+// separate field from the server.
+function isIntraday(points) {
+  if (points.length < 2) return false
+  return points[1].time - points[0].time < 20 * 60 * 60
+}
+
+function formatTooltipDate(unixSeconds, intraday) {
+  const date = new Date(unixSeconds * 1000)
+  return intraday
+    ? date.toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})
+    : date.toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric"})
+}
+
+// Compact form for the time-axis tick marks themselves (the tooltip above
+// carries the full date, so ticks just need to be scannable).
+function formatAxisDate(unixSeconds, intraday) {
+  const date = new Date(unixSeconds * 1000)
+  return intraday
+    ? date.toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"})
+    : date.toLocaleDateString("en-US", {month: "short", day: "numeric"})
 }
 
 const PortfolioChart = {
   mounted() {
     const colors = themeColors(this.el)
+    this.currency = "EUR"
+    this.mode = "value"
+    this.intraday = false
+
     this.chart = createChart(this.el, {
       autoSize: true,
       layout: {
         background: {color: "transparent"},
-        textColor: colors.text,
+        textColor: colors.axisText,
         attributionLogo: false,
+        fontSize: 11,
       },
       grid: {vertLines: {visible: false}, horzLines: {visible: false}},
       rightPriceScale: {visible: false},
-      leftPriceScale: {visible: false},
-      timeScale: {visible: false, borderVisible: false},
+      leftPriceScale: {
+        visible: true,
+        borderVisible: false,
+        scaleMargins: {top: 0.15, bottom: 0.15},
+        // Default density packs a tick every ~2.5 label-heights; bump it up
+        // so a ~160-220px-tall chart lands around 4-6 ticks instead of 8+.
+        tickMarkDensity: 3,
+      },
+      timeScale: {
+        visible: true,
+        borderVisible: false,
+        tickMarkFormatter: (time) => formatAxisDate(time, this.intraday),
+      },
       handleScroll: false,
       handleScale: false,
+      trackingMode: {exitMode: TrackingModeExitMode.OnTouchEnd},
       crosshair: {
+        mode: CrosshairMode.Magnet,
         horzLine: {visible: false, labelVisible: false},
-        vertLine: {visible: false, labelVisible: false},
+        vertLine: {
+          visible: true,
+          style: LineStyle.Solid,
+          width: 1,
+          color: colors.crosshair,
+          labelVisible: false,
+        },
       },
     })
     this.series = this.chart.addSeries(AreaSeries, {
@@ -60,13 +131,33 @@ const PortfolioChart = {
       bottomColor: "transparent",
       priceLineVisible: false,
       lastValueVisible: false,
-      crosshairMarkerVisible: false,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: 4,
+      crosshairMarkerBorderColor: colors.line,
+      crosshairMarkerBackgroundColor: colors.line,
+      priceFormat: {
+        type: "custom",
+        formatter: (price) => formatMoney(price, this.currency),
+        minMove: 0.01,
+      },
     })
 
-    this.handleEvent("chart:data", ({points, mode}) => {
+    this.el.style.position = "relative"
+    this.tooltip = document.createElement("div")
+    this.tooltip.className =
+      "pointer-events-none absolute z-10 hidden -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg border border-base-300 bg-base-100/95 px-2.5 py-1.5 text-[12px] shadow-md backdrop-blur-sm"
+    this.el.appendChild(this.tooltip)
+
+    this.chart.subscribeCrosshairMove((param) => this.updateTooltip(param))
+
+    this.handleEvent("chart:data", ({points, mode, currency}) => {
+      this.currency = currency
+      this.mode = mode
+      this.intraday = isIntraday(points)
       this.series.setData(points)
       this.setZeroLine(mode === "profit")
       this.chart.timeScale().fitContent()
+      this.hideTooltip()
     })
 
     this.themeObserver = new MutationObserver(() => this.applyTheme())
@@ -83,8 +174,16 @@ const PortfolioChart = {
 
   applyTheme() {
     const colors = themeColors(this.el)
-    this.chart.applyOptions({layout: {textColor: colors.text}})
-    this.series.applyOptions({lineColor: colors.line, topColor: colors.areaTop})
+    this.chart.applyOptions({
+      layout: {textColor: colors.axisText},
+      crosshair: {vertLine: {color: colors.crosshair}},
+    })
+    this.series.applyOptions({
+      lineColor: colors.line,
+      topColor: colors.areaTop,
+      crosshairMarkerBorderColor: colors.line,
+      crosshairMarkerBackgroundColor: colors.line,
+    })
     if (this.zeroLine) {
       this.zeroLine.applyOptions({color: colors.zero})
     }
@@ -103,6 +202,38 @@ const PortfolioChart = {
       this.series.removePriceLine(this.zeroLine)
       this.zeroLine = null
     }
+  },
+
+  updateTooltip(param) {
+    const data = param.point && param.seriesData?.get(this.series)
+    if (!param.point || !data || param.time === undefined) {
+      this.hideTooltip()
+      return
+    }
+
+    const price = data.value ?? data.close
+    const changeClass =
+      this.mode === "profit" ? (price < 0 ? "text-error" : "text-success") : ""
+
+    this.tooltip.innerHTML = `
+      <div class="text-base-content/50">${formatTooltipDate(param.time, this.intraday)}</div>
+      <div class="font-semibold tabular-nums ${changeClass}">${formatMoney(price, this.currency)}</div>
+    `
+    this.tooltip.classList.remove("hidden")
+
+    const width = this.el.clientWidth
+    const tooltipWidth = this.tooltip.offsetWidth
+    const margin = 8
+    const left = Math.min(
+      Math.max(param.point.x, tooltipWidth / 2 + margin),
+      width - tooltipWidth / 2 - margin
+    )
+    this.tooltip.style.left = `${left}px`
+    this.tooltip.style.top = `${Math.max(param.point.y - 12, 0)}px`
+  },
+
+  hideTooltip() {
+    this.tooltip.classList.add("hidden")
   },
 }
 
