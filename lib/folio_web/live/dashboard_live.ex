@@ -795,7 +795,8 @@ defmodule FolioWeb.DashboardLive do
     push_event(socket, "chart:data", %{
       points:
         Enum.map(series, &%{time: DateTime.to_unix(&1.at), value: Decimal.to_float(&1.value)}),
-      mode: Atom.to_string(mode)
+      mode: Atom.to_string(mode),
+      currency: currency
     })
   end
 
