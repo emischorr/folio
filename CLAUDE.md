@@ -86,6 +86,18 @@ already expect (`postgres` / `postgres`). Data persists in `.docker/postgres`.
 - **Dev-only routes**, gated on `config :folio, dev_routes: true`: `/dev/dashboard`
   (LiveDashboard) and `/dev/mailbox` (Swoosh local adapter preview).
 - **HTTP client is `Req`.** It is already a dependency.
+- **Yahoo search is the scarcest resource in this project.**
+  `query{1,2}.finance.yahoo.com/v1/finance/search` is rate-limited per IP and answers
+  429 far sooner than you would expect - roughly 50 requests across an afternoon
+  earned a throttle that had not lifted two hours later, on both hosts. Its buckets
+  are per-endpoint: `/v8/finance/chart` stays healthy (so prices keep updating) while
+  search is dead, as does OpenFIGI. **Never probe search in a loop, and never poll it
+  to see whether a throttle has cleared.** Develop against the recorded fixtures in
+  `test/support/api_responses/` and spend live calls only on one final check.
+  `Folio.Assets.SearchCache` sits in front of every resolution lookup - 10 minutes
+  for hits, a 60-second negative cache for 429s - and `mix precommit` never touches
+  the network. `Folio.Clients.HTTP.retry?/2` also refuses to retry a 429: Req's
+  built-in `:transient` policy turns one throttled lookup into three requests.
 - Generators default to `timestamp_type: :utc_datetime` (`config/config.exs`).
 
 ## CodeLead preview contract

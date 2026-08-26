@@ -16,6 +16,10 @@ config :folio, Folio.Repo,
 # Oban: never run queues/plugins in test; jobs are exercised with Oban.Testing
 config :folio, Oban, testing: :manual
 
+# Bypass the resolution cache: a shared named ETS table would leak stubbed
+# responses between the async suites.
+config :folio, :search_cache, ok_ttl_ms: 0, error_ttl_ms: 0
+
 # Route all Req HTTP traffic to test stubs; never hit the network
 config :folio, :req_options, plug: {Req.Test, Folio.Clients}, retry: false
 

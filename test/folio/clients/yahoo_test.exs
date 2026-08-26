@@ -5,7 +5,7 @@ defmodule Folio.Clients.YahooTest do
 
   alias Folio.Clients.Yahoo
 
-  test "search/1 parses equity/ETF hits - without any currency field - and sends a browser UA" do
+  test "search/1 parses equity, ETF and fund hits - without any currency field - and sends a browser UA" do
     Req.Test.stub(Folio.Clients, fn conn ->
       assert conn.request_path == "/v1/finance/search"
       assert [user_agent] = Plug.Conn.get_req_header(conn, "user-agent")
@@ -20,7 +20,9 @@ defmodule Folio.Clients.YahooTest do
              | _rest
            ] = hits
 
-    assert Enum.map(hits, & &1.kind) == [:stock, :etf, :etf, :stock]
+    assert Enum.map(hits, & &1.kind) == [:stock, :etf, :etf, :stock, :etf]
+    # Yahoo types European fund listings as MUTUALFUND; they must survive as ETFs.
+    assert Enum.any?(hits, &(&1.symbol == "EWG2.SG" and &1.kind == :etf))
     # The NVDX row has no longname; the shortname fallback applies.
     assert Enum.any?(hits, &(&1.symbol == "NVDX" and is_binary(&1.name)))
   end

@@ -29,6 +29,7 @@ config :folio, FolioWeb.Endpoint, http: [port: port]
 # Optional CoinGecko demo API key: raises the public rate limit from ~5-15
 # to 100 requests/minute. See README "Data sources".
 config :folio, :coingecko_api_key, System.get_env("COINGECKO_API_KEY")
+config :folio, :openfigi_api_key, System.get_env("OPENFIGI_API_KEY")
 
 # Password for the bootstrapped Admin user. Hashed once on first creation;
 # changing it later has no effect until a real login flow manages passwords.

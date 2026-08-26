@@ -41,7 +41,12 @@ config :folio, Oban,
 config :folio, :clients,
   crypto: Folio.Clients.CoinGecko,
   equity: Folio.Clients.Yahoo,
-  fx: Folio.Clients.Frankfurter
+  fx: Folio.Clients.Frankfurter,
+  security_id: Folio.Clients.OpenFigi
+
+# Asset-resolution lookup cache. Yahoo search is rate-limited per IP, so hits are
+# held for minutes and 429s are remembered briefly. See README "Data sources".
+config :folio, :search_cache, ok_ttl_ms: :timer.minutes(10), error_ttl_ms: :timer.seconds(60)
 
 # Defaults the dashboard UI reads (iteration 2)
 config :folio, :dashboard,

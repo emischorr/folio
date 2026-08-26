@@ -1,6 +1,6 @@
 {
     "explains": [],
-    "count": 4,
+    "count": 5,
     "quotes": [
         {
             "exchange": "NMS",
@@ -51,12 +51,24 @@
             "score": 20003.0,
             "typeDisp": "Equity",
             "longname": "NVIDIA Corporation",
-            "exchDisp": "S\u00e3o Paulo",
+            "exchDisp": "São Paulo",
             "sector": "Technology",
             "industry": "Semiconductors",
             "isYahooFinance": true,
             "prevName": "Usual Stablecoin",
             "nameChangeDate": "2026-08-25"
+        },
+        {
+            "exchange": "STU",
+            "shortname": "EUWAX Gold II",
+            "quoteType": "MUTUALFUND",
+            "symbol": "EWG2.SG",
+            "index": "quotes",
+            "score": 20002.0,
+            "typeDisp": "Fund",
+            "longname": "EUWAX Gold II",
+            "exchDisp": "Stuttgart",
+            "isYahooFinance": true
         }
     ],
     "news": [],

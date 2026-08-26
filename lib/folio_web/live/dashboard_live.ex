@@ -12,6 +12,7 @@ defmodule FolioWeb.DashboardLive do
   alias Folio.Analytics.Grid
   alias Folio.Assets
   alias Folio.Assets.Candidate
+  alias Folio.Assets.Identifier
   alias Folio.Portfolios
   alias Folio.Portfolios.Transaction
 
@@ -69,7 +70,7 @@ defmodule FolioWeb.DashboardLive do
     socket = assign(socket, search_query: query, asset_error: nil)
 
     if query == "" do
-      {:noreply, assign(socket, search_results: [])}
+      {:noreply, assign(socket, search_results: [], search_status: :ok)}
     else
       {:noreply, start_async(socket, :asset_search, fn -> Assets.resolve(query) end)}
     end
@@ -88,6 +89,7 @@ defmodule FolioWeb.DashboardLive do
            search_results: [],
            search_query: "",
            asset_error: nil,
+           isin_error: nil,
            txn_currency: candidate.quote_currency || socket.assigns.currency
          )
          |> recompute_total()}
@@ -95,7 +97,34 @@ defmodule FolioWeb.DashboardLive do
   end
 
   def handle_event("clear_asset", _params, socket) do
-    {:noreply, assign(socket, selected_candidate: nil, search_query: "", search_results: [])}
+    {:noreply,
+     assign(socket,
+       selected_candidate: nil,
+       search_query: "",
+       search_results: [],
+       search_status: :ok,
+       isin_error: nil
+     )}
+  end
+
+  def handle_event("set_isin", _params, %{assigns: %{selected_candidate: nil}} = socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("set_isin", %{"isin" => value}, socket) do
+    candidate = socket.assigns.selected_candidate
+    isin = Identifier.normalize(value)
+
+    cond do
+      isin == "" ->
+        {:noreply, assign(socket, selected_candidate: %{candidate | isin: nil}, isin_error: nil)}
+
+      Identifier.isin?(isin) ->
+        {:noreply, assign(socket, selected_candidate: %{candidate | isin: isin}, isin_error: nil)}
+
+      true ->
+        {:noreply, assign(socket, isin_error: "Not a valid ISIN")}
+    end
   end
 
   def handle_event("manual_entry", _params, socket) do
@@ -158,12 +187,12 @@ defmodule FolioWeb.DashboardLive do
   def handle_info({:fx_updated, _currency}, socket), do: {:noreply, maybe_refresh(socket)}
 
   @impl true
-  def handle_async(:asset_search, {:ok, candidates}, socket) do
-    {:noreply, assign(socket, search_results: candidates)}
+  def handle_async(:asset_search, {:ok, %{candidates: candidates, status: status}}, socket) do
+    {:noreply, assign(socket, search_results: candidates, search_status: status)}
   end
 
   def handle_async(:asset_search, {:exit, _reason}, socket) do
-    {:noreply, assign(socket, search_results: [])}
+    {:noreply, assign(socket, search_results: [], search_status: :unavailable)}
   end
 
   @impl true
@@ -360,6 +389,13 @@ defmodule FolioWeb.DashboardLive do
               {@asset.name}
               <span class="text-[13px] font-medium text-base-content/40">{@asset.symbol}</span>
             </span>
+            <span
+              :if={@asset.isin}
+              id="asset-isin"
+              class="ml-auto font-mono text-[12px] tracking-tight text-base-content/40"
+            >
+              {@asset.isin}
+            </span>
           </header>
           <div id="asset-transactions" class="flex flex-col gap-2.5 px-4 pb-16 pt-2">
             <.link
@@ -412,23 +448,56 @@ defmodule FolioWeb.DashboardLive do
               <%= if @selected_candidate do %>
                 <div
                   id="selected-asset"
-                  class="input input-lg flex w-full items-center justify-between rounded-xl"
+                  class="flex w-full flex-col gap-2 rounded-xl border border-base-300 bg-base-100 px-4 py-3"
                 >
-                  <span class="truncate text-[15px] font-semibold">
-                    {@selected_candidate.name}
-                    <span class="text-[13px] font-medium text-base-content/45">
-                      {@selected_candidate.symbol}<span :if={@selected_candidate.exchange}> &middot; {@selected_candidate.exchange}</span>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="truncate text-[15px] font-semibold">
+                      {@selected_candidate.name}
+                      <span class="text-[13px] font-medium text-base-content/45">
+                        {@selected_candidate.symbol}<span :if={@selected_candidate.exchange}> &middot; {@selected_candidate.exchange}</span>
+                      </span>
                     </span>
-                  </span>
-                  <button
-                    type="button"
-                    id="clear-asset"
-                    phx-click="clear_asset"
-                    aria-label="Clear asset"
-                    class="cursor-pointer opacity-40 hover:opacity-100"
-                  >
-                    <.icon name="hero-x-mark" class="size-4" />
-                  </button>
+                    <button
+                      type="button"
+                      id="clear-asset"
+                      phx-click="clear_asset"
+                      aria-label="Clear asset"
+                      class="cursor-pointer opacity-40 hover:opacity-100"
+                    >
+                      <.icon name="hero-x-mark" class="size-4" />
+                    </button>
+                  </div>
+                  <%= if @selected_candidate.isin do %>
+                    <div
+                      id="selected-asset-isin"
+                      class="flex items-center gap-1.5 text-[13px] text-base-content/60"
+                    >
+                      <.icon name="hero-check-badge" class="size-4 text-success" />
+                      <span class="font-medium">ISIN</span>
+                      <span class="font-mono tracking-tight">{@selected_candidate.isin}</span>
+                    </div>
+                  <% else %>
+                    <form id="asset-isin-form" phx-change="set_isin" onsubmit="return false;">
+                      <label class="flex items-center gap-2 text-[13px] text-base-content/60">
+                        <span class="font-medium">ISIN</span>
+                        <input
+                          type="text"
+                          name="isin"
+                          id="asset-isin-input"
+                          value=""
+                          phx-debounce="300"
+                          autocomplete="off"
+                          maxlength="12"
+                          placeholder="optional - paste to verify"
+                          aria-label="ISIN"
+                          class="grow bg-transparent font-mono tracking-tight outline-none placeholder:font-sans placeholder:text-base-content/35"
+                        />
+                      </label>
+                    </form>
+                  <% end %>
+                  <p :if={@isin_error} id="isin-error" class="text-[12px] text-error">
+                    {@isin_error}
+                  </p>
                 </div>
               <% else %>
                 <form
@@ -445,7 +514,7 @@ defmodule FolioWeb.DashboardLive do
                       value={@search_query}
                       phx-debounce="300"
                       autocomplete="off"
-                      placeholder="Search name or ticker"
+                      placeholder="Search name, ticker, ISIN or WKN"
                       aria-label="Search asset"
                       class="grow text-[16px]"
                     />
@@ -469,9 +538,26 @@ defmodule FolioWeb.DashboardLive do
                   >
                     <span class="text-[15px] font-semibold">{candidate.name}</span>
                     <span class="text-[12px] text-base-content/50">{candidate_meta(candidate)}</span>
+                    <span
+                      :if={candidate.isin}
+                      id={"candidate-#{index}-isin"}
+                      class="font-mono text-[11px] tracking-tight text-base-content/35"
+                    >
+                      {candidate.isin}
+                    </span>
                   </button>
                 </div>
               <% end %>
+              <p
+                :if={
+                  @asset_entry_mode == :search and is_nil(@selected_candidate) and
+                    @search_query != "" and @search_status != :ok
+                }
+                id="search-status"
+                class="mt-1.5 text-[13px] text-base-content/50"
+              >
+                {search_status_message(@search_status)}
+              </p>
               <p :if={@asset_error} id="asset-error" class="mt-1.5 text-sm text-error">
                 {@asset_error}
               </p>
@@ -494,7 +580,7 @@ defmodule FolioWeb.DashboardLive do
               class={[
                 "flex flex-col gap-4",
                 (is_nil(@selected_candidate) and @asset_entry_mode == :search and
-                   @search_query != "") && "opacity-40"
+                   @search_query != "" and @search_status == :ok) && "opacity-40"
               ]}
             >
               <div
@@ -555,6 +641,32 @@ defmodule FolioWeb.DashboardLive do
                     id="manual-quote-currency"
                     value={@txn_currency}
                     class="input input-lg w-full rounded-xl text-[16px]"
+                  />
+                </div>
+                <div>
+                  <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">
+                    ISIN (optional)
+                  </span>
+                  <.input
+                    type="text"
+                    name="manual[isin]"
+                    id="manual-isin"
+                    value=""
+                    maxlength="12"
+                    class="input input-lg w-full rounded-xl font-mono text-[16px] tracking-tight"
+                  />
+                </div>
+                <div>
+                  <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">
+                    WKN (optional)
+                  </span>
+                  <.input
+                    type="text"
+                    name="manual[wkn]"
+                    id="manual-wkn"
+                    value=""
+                    maxlength="6"
+                    class="input input-lg w-full rounded-xl font-mono text-[16px] tracking-tight"
                   />
                 </div>
               </div>
@@ -811,8 +923,10 @@ defmodule FolioWeb.DashboardLive do
       selected_candidate: candidate,
       search_query: "",
       search_results: [],
+      search_status: :ok,
       asset_entry_mode: :search,
       asset_error: nil,
+      isin_error: nil,
       txn_type: transaction.type || :buy,
       date: executed_at |> DateTime.to_date() |> Date.to_iso8601(),
       time: executed_at |> DateTime.to_time() |> Time.to_iso8601() |> String.slice(0, 5),
@@ -880,9 +994,15 @@ defmodule FolioWeb.DashboardLive do
         end
 
       asset_id ->
+        store_identifiers(asset_id, candidate)
         {:ok, asset_id}
     end
   end
+
+  defp store_identifiers(_asset_id, %Candidate{isin: nil, wkn: nil}), do: :noop
+
+  defp store_identifiers(asset_id, %Candidate{isin: isin, wkn: wkn}),
+    do: Assets.update_identifiers(asset_id, %{isin: isin, wkn: wkn})
 
   defp manual_attrs(params) do
     params = params || %{}
@@ -892,8 +1012,18 @@ defmodule FolioWeb.DashboardLive do
       name: params["name"] || "",
       kind: if(params["kind"] == "etf", do: :etf, else: :stock),
       exchange: presence(params["exchange"]),
-      quote_currency: params["quote_currency"] || ""
+      quote_currency: params["quote_currency"] || "",
+      isin: identifier(params["isin"]),
+      wkn: identifier(params["wkn"])
     }
+  end
+
+  defp identifier(value) do
+    case value && Identifier.normalize(value) do
+      nil -> nil
+      "" -> nil
+      identifier -> identifier
+    end
   end
 
   defp presence(nil), do: nil
@@ -934,6 +1064,12 @@ defmodule FolioWeb.DashboardLive do
     do: Analytics.convert(amount, currency, display_currency)
 
   # -- presentation helpers --------------------------------------------------
+
+  defp search_status_message(:rate_limited),
+    do: "Search is rate-limited right now - try again in a minute, or enter the ticker manually."
+
+  defp search_status_message(_status),
+    do: "Search is unavailable right now - enter the ticker manually."
 
   defp candidate_meta(%Candidate{} = candidate) do
     [candidate.symbol, candidate.exchange, candidate.quote_currency]

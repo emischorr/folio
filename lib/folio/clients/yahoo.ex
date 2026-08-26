@@ -10,24 +10,27 @@ defmodule Folio.Clients.Yahoo do
   import Folio.Clients.HTTP, only: [base: 1, handle: 1, to_decimal: 1]
 
   @base_url "https://query1.finance.yahoo.com"
+  # Yahoo types many European ETF and ETC listings as MUTUALFUND - excluding
+  # that type hides whole exchanges (Stuttgart in particular).
+  @quote_types %{"EQUITY" => :stock, "ETF" => :etf, "MUTUALFUND" => :etf}
   @user_agent "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
   @impl true
   def search(query) do
-    params = [q: query, quotesCount: 10, newsCount: 0]
+    params = [q: query, quotesCount: 20, newsCount: 0]
 
     with {:ok, body} <-
            [url: @base_url <> "/v1/finance/search", params: params] |> request() |> handle() do
       hits =
         body
         |> Map.get("quotes", [])
-        |> Enum.filter(&(&1["quoteType"] in ["EQUITY", "ETF"] and is_binary(&1["symbol"])))
+        |> Enum.filter(&(is_map_key(@quote_types, &1["quoteType"]) and is_binary(&1["symbol"])))
         |> Enum.map(fn quote_hit ->
           %{
             symbol: quote_hit["symbol"],
             name: quote_hit["longname"] || quote_hit["shortname"] || quote_hit["symbol"],
             exchange: quote_hit["exchDisp"] || quote_hit["exchange"],
-            kind: if(quote_hit["quoteType"] == "ETF", do: :etf, else: :stock)
+            kind: @quote_types[quote_hit["quoteType"]]
           }
         end)
 

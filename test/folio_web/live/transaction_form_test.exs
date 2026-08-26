@@ -26,6 +26,15 @@ defmodule FolioWeb.TransactionFormTest do
     end)
   end
 
+  defp stub_isin_search do
+    Req.Test.stub(Folio.Clients, fn conn ->
+      case conn.request_path do
+        "/v1/finance/search" -> json_fixture(conn, "yahoo_search_isin.json")
+        "/v8/finance/chart/" <> _symbol -> json_fixture(conn, "yahoo_chart_nvda.json")
+      end
+    end)
+  end
+
   defp search_and_select_nvda(view) do
     view
     |> element("#asset-search-form")
@@ -102,6 +111,100 @@ defmodule FolioWeb.TransactionFormTest do
     end
   end
 
+  describe "ISIN" do
+    test "an ISIN search shows the identifier on the candidates and locks it in", %{conn: conn} do
+      stub_isin_search()
+      {:ok, view, _html} = live(conn, ~p"/transactions/new")
+
+      view |> element("#asset-search-form") |> render_change(%{"query" => "DE000EWG2LD7"})
+      render_async(view)
+
+      assert view |> element("#candidate-0") |> render() =~ "EUWAX Gold II"
+      assert view |> element("#candidate-0-isin") |> render() =~ "DE000EWG2LD7"
+
+      view |> element("#candidate-0") |> render_click()
+      assert view |> element("#selected-asset-isin") |> render() =~ "DE000EWG2LD7"
+      refute has_element?(view, "#asset-isin-form")
+    end
+
+    test "a name search offers an editable ISIN that validates the check digit", %{conn: conn} do
+      stub_remote_search()
+      {:ok, view, _html} = live(conn, ~p"/transactions/new")
+      search_and_select_nvda(view)
+
+      assert has_element?(view, "#asset-isin-form")
+      refute has_element?(view, "#selected-asset-isin")
+
+      view |> element("#asset-isin-form") |> render_change(%{"isin" => "IE00B44Z5B49"})
+      assert view |> element("#isin-error") |> render() =~ "Not a valid ISIN"
+
+      view |> element("#asset-isin-form") |> render_change(%{"isin" => "ie00 b44z-5b48"})
+      refute has_element?(view, "#isin-error")
+      assert view |> element("#selected-asset-isin") |> render() =~ "IE00B44Z5B48"
+    end
+
+    test "a typed ISIN is stored on an asset that already exists locally", %{conn: conn} do
+      asset = stock_asset_fixture(%{name: "NVIDIA Corporation", symbol: "NVDA"})
+      stub_remote_search()
+      {:ok, view, _html} = live(conn, ~p"/transactions/new")
+
+      view |> element("#asset-search-form") |> render_change(%{"query" => "nvid"})
+      render_async(view)
+      view |> element("#candidate-0") |> render_click()
+      view |> element("#asset-isin-form") |> render_change(%{"isin" => "US67066G1040"})
+
+      view
+      |> element("#transaction-form")
+      |> render_submit(%{
+        "transaction" => %{
+          "date" => "2026-08-20",
+          "time" => "14:30",
+          "quantity" => "5",
+          "price_per_unit" => "183.74",
+          "currency" => "USD"
+        }
+      })
+
+      assert_patch(view, ~p"/")
+      assert Assets.get_asset!(asset.id).isin == "US67066G1040"
+    end
+  end
+
+  describe "provider health" do
+    test "a rate-limited search says so instead of showing nothing", %{conn: conn} do
+      Req.Test.stub(Folio.Clients, fn conn -> json_body(conn, "{}", 429) end)
+      {:ok, view, _html} = live(conn, ~p"/transactions/new")
+
+      view |> element("#asset-search-form") |> render_change(%{"query" => "nvidia"})
+      render_async(view)
+
+      assert view |> element("#search-status") |> render() =~ "rate-limited"
+      # The manual-entry escape hatch has to stay reachable.
+      view |> element("#toggle-entry-mode") |> render_click()
+      assert has_element?(view, "#manual-asset-fields")
+    end
+
+    test "any other provider failure reports search as unavailable", %{conn: conn} do
+      Req.Test.stub(Folio.Clients, fn conn -> json_body(conn, "{}", 500) end)
+      {:ok, view, _html} = live(conn, ~p"/transactions/new")
+
+      view |> element("#asset-search-form") |> render_change(%{"query" => "nvidia"})
+      render_async(view)
+
+      assert view |> element("#search-status") |> render() =~ "unavailable"
+    end
+
+    test "a healthy search shows no status message", %{conn: conn} do
+      stub_remote_search()
+      {:ok, view, _html} = live(conn, ~p"/transactions/new")
+
+      view |> element("#asset-search-form") |> render_change(%{"query" => "nvidia"})
+      render_async(view)
+
+      refute has_element?(view, "#search-status")
+    end
+  end
+
   describe "saving" do
     test "a remote candidate creates the asset, enqueues backfill, and saves", %{
       conn: conn,
@@ -155,7 +258,9 @@ defmodule FolioWeb.TransactionFormTest do
           "name" => "Acme SE",
           "kind" => "stock",
           "exchange" => "XETRA",
-          "quote_currency" => "EUR"
+          "quote_currency" => "EUR",
+          "isin" => "de000ewg2ld7",
+          "wkn" => "ewg2ld"
         },
         "transaction" => %{
           "date" => "2026-08-20",
@@ -170,6 +275,8 @@ defmodule FolioWeb.TransactionFormTest do
       assert [asset] = Assets.search_local("ACME.DE")
       assert asset.price_source == :yahoo
       assert asset.source_id == "ACME.DE"
+      assert asset.isin == "DE000EWG2LD7"
+      assert asset.wkn == "EWG2LD"
       assert [_transaction] = Portfolios.list_transactions(portfolio.id)
     end
   end

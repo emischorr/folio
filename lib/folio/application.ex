@@ -14,6 +14,7 @@ defmodule Folio.Application do
       {Task, &Folio.Bootstrap.run/0},
       {DNSCluster, query: Application.get_env(:folio, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Folio.PubSub},
+      Folio.Assets.SearchCache,
       # Start a worker by calling: Folio.Worker.start_link(arg)
       # {Folio.Worker, arg},
       # Start to serve requests, typically the last entry

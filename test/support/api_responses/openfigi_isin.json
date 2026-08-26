@@ -1,0 +1,42 @@
+[
+    {
+        "data": [
+            {
+                "figi": "BBG00BDQVD28",
+                "name": "ISHARES S&P 500 IT SECTOR",
+                "ticker": "IUIT",
+                "exchCode": "LN",
+                "compositeFIGI": "BBG00BDQVD00",
+                "securityType": "ETP",
+                "marketSector": "Equity",
+                "shareClassFIGI": "BBG00BDQVD19",
+                "securityType2": "Mutual Fund",
+                "securityDescription": "IUIT"
+            },
+            {
+                "figi": "BBG00BFN0BW8",
+                "name": "ISHARES S&P 500 IT SECTOR",
+                "ticker": "QDVE",
+                "exchCode": "GR",
+                "compositeFIGI": "BBG00BFN0BW8",
+                "securityType": "ETP",
+                "marketSector": "Equity",
+                "shareClassFIGI": "BBG00BDQVD19",
+                "securityType2": "Mutual Fund",
+                "securityDescription": "QDVE"
+            },
+            {
+                "figi": "BBG00BFN0BX7",
+                "name": "ISHARES S&P 500 IT SECTOR",
+                "ticker": "QDVE",
+                "exchCode": "GF",
+                "compositeFIGI": "BBG00BFN0BW8",
+                "securityType": "ETP",
+                "marketSector": "Equity",
+                "shareClassFIGI": "BBG00BDQVD19",
+                "securityType2": "Mutual Fund",
+                "securityDescription": "QDVE"
+            }
+        ]
+    }
+]

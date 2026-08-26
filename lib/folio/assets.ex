@@ -9,11 +9,13 @@ defmodule Folio.Assets do
 
   alias Folio.Assets.Asset
   alias Folio.Assets.Candidate
+  alias Folio.Assets.Identifier
   alias Folio.Assets.Resolver
   alias Folio.MarketData
   alias Folio.Repo
 
   @initial_history_days 30
+  @search_limit 20
 
   @doc "Fetches an asset by id, raising if absent."
   @spec get_asset!(pos_integer()) :: Asset.t()
@@ -27,24 +29,31 @@ defmodule Folio.Assets do
   @spec list_assets() :: [Asset.t()]
   def list_assets, do: Repo.all(from a in Asset, order_by: [asc: a.symbol])
 
-  @doc "Local substring search over symbol and name (case-insensitive)."
+  @doc """
+  Local search: substring match over symbol and name (case-insensitive), or
+  an exact match on ISIN or WKN.
+  """
   @spec search_local(String.t()) :: [Asset.t()]
   def search_local(query) do
     pattern = "%#{sanitize_like(query)}%"
+    identifier = Identifier.normalize(query)
 
     Repo.all(
       from a in Asset,
-        where: ilike(a.symbol, ^pattern) or ilike(a.name, ^pattern),
-        order_by: [asc: a.symbol]
+        where:
+          ilike(a.symbol, ^pattern) or ilike(a.name, ^pattern) or a.isin == ^identifier or
+            a.wkn == ^identifier,
+        order_by: [asc: a.symbol],
+        limit: ^@search_limit
     )
   end
 
   @doc """
-  Resolves a user-typed name or ticker into candidates: local matches first,
-  then remote search results (CoinGecko for crypto, Yahoo for stocks/ETFs).
-  Remote failures degrade to local-only results.
+  Resolves a user-typed name, ticker, ISIN or WKN into candidates (local
+  matches first) plus the health of the remote providers. Remote failures
+  degrade to local-only results with a non-`:ok` status.
   """
-  @spec resolve(String.t()) :: [Candidate.t()]
+  @spec resolve(String.t()) :: %{candidates: [Candidate.t()], status: Resolver.status()}
   def resolve(query), do: Resolver.resolve(query)
 
   @doc """
@@ -79,6 +88,22 @@ defmodule Folio.Assets do
     |> create_asset()
   end
 
+  @doc """
+  Fills in the identifiers of an existing asset. Only keys that are present
+  and currently blank on the asset are written, so a stored identifier is
+  never silently overwritten.
+  """
+  @spec update_identifiers(pos_integer(), map()) ::
+          {:ok, Asset.t()} | {:error, Ecto.Changeset.t()} | :noop
+  def update_identifiers(asset_id, attrs) do
+    asset = get_asset!(asset_id)
+
+    case fillable_identifiers(asset, attrs) do
+      changes when map_size(changes) == 0 -> :noop
+      changes -> asset |> Asset.identifiers_changeset(changes) |> Repo.update()
+    end
+  end
+
   @doc "Distinct quote currencies across all assets."
   @spec quote_currencies() :: [String.t()]
   def quote_currencies do
@@ -89,6 +114,15 @@ defmodule Folio.Assets do
   @spec list_assets_by_source(Asset.price_source()) :: [Asset.t()]
   def list_assets_by_source(price_source) do
     Repo.all(from a in Asset, where: a.price_source == ^price_source, order_by: [asc: a.id])
+  end
+
+  defp fillable_identifiers(%{isin: isin, wkn: wkn}, attrs) do
+    for {field, stored} <- [isin: isin, wkn: wkn],
+        is_nil(stored),
+        value = attrs[field],
+        not is_nil(value),
+        into: %{},
+        do: {field, value}
   end
 
   defp sanitize_like(query) do

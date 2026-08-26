@@ -96,5 +96,48 @@ defmodule Folio.AssetsTest do
       crypto_asset_fixture()
       assert Assets.search_local("%") == []
     end
+
+    test "matches an exact ISIN or WKN, however it is typed" do
+      asset = etf_asset_fixture(%{isin: "IE00B44Z5B48", wkn: "A1JJTD"})
+
+      assert [found] = Assets.search_local("IE00B44Z5B48")
+      assert found.id == asset.id
+      assert [_found] = Assets.search_local("ie00 b44z-5b48")
+      assert [_found] = Assets.search_local("a1jjtd")
+    end
+  end
+
+  describe "identifiers" do
+    test "an invalid ISIN or WKN is rejected" do
+      assert {:error, changeset} =
+               Assets.create_asset(%{
+                 symbol: "QDVE.DE",
+                 name: "iShares S&P 500 IT",
+                 kind: :etf,
+                 quote_currency: "EUR",
+                 price_source: :yahoo,
+                 source_id: "QDVE.DE",
+                 isin: "IE00B44Z5B49"
+               })
+
+      assert %{isin: ["is not a valid ISIN"]} = errors_on(changeset)
+    end
+
+    test "update_identifiers/2 fills blanks but never overwrites a stored value" do
+      asset = etf_asset_fixture(%{isin: "IE00B44Z5B48"})
+
+      assert {:ok, updated} =
+               Assets.update_identifiers(asset.id, %{isin: "DE000EWG2LD7", wkn: "A1JJTD"})
+
+      assert updated.isin == "IE00B44Z5B48"
+      assert updated.wkn == "A1JJTD"
+    end
+
+    test "update_identifiers/2 is a no-op when there is nothing to fill" do
+      asset = etf_asset_fixture(%{isin: "IE00B44Z5B48", wkn: "A1JJTD"})
+
+      assert Assets.update_identifiers(asset.id, %{isin: "DE000EWG2LD7"}) == :noop
+      assert Assets.update_identifiers(asset.id, %{isin: nil, wkn: nil}) == :noop
+    end
   end
 end

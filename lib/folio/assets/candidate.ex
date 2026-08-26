@@ -16,6 +16,8 @@ defmodule Folio.Assets.Candidate do
     :quote_currency,
     :price_source,
     :source_id,
+    :isin,
+    :wkn,
     :local_asset_id
   ]
 
@@ -27,6 +29,8 @@ defmodule Folio.Assets.Candidate do
           quote_currency: String.t() | nil,
           price_source: Asset.price_source(),
           source_id: String.t(),
+          isin: String.t() | nil,
+          wkn: String.t() | nil,
           local_asset_id: pos_integer() | nil
         }
 
@@ -41,6 +45,8 @@ defmodule Folio.Assets.Candidate do
       quote_currency: asset.quote_currency,
       price_source: asset.price_source,
       source_id: asset.source_id,
+      isin: asset.isin,
+      wkn: asset.wkn,
       local_asset_id: asset.id
     }
   end

@@ -7,14 +7,35 @@ defmodule Folio.Clients.HTTP do
   Test env injects `plug: {Req.Test, Folio.Clients}` via `:req_options`.
   """
 
+  # 999 is Yahoo's own throttle code.
+  @rate_limit_statuses [429, 999]
+
   @doc "Base request with Decimal JSON decoding, retries, and env overrides."
   @spec base(keyword()) :: Req.Request.t()
   def base(opts \\ []) do
-    [decoders: [json: &Jason.decode(&1, floats: :decimals)], retry: :transient, max_retries: 2]
+    [
+      decoders: [json: &Jason.decode(&1, floats: :decimals)],
+      retry: &retry?/2,
+      max_retries: 2
+    ]
     |> Req.new()
     |> Req.merge(opts)
     |> Req.merge(Application.get_env(:folio, :req_options, []))
   end
+
+  @doc """
+  Retry predicate. Like Req's `:transient`, except a rate limit is never
+  retried - Yahoo's search endpoint throttles per IP, and asking again
+  immediately only deepens it. Callers snooze on `:rate_limited` instead.
+  """
+  @spec retry?(Req.Request.t(), Req.Response.t() | Exception.t()) :: boolean()
+  def retry?(_request, %Req.Response{status: status}) when status in @rate_limit_statuses,
+    do: false
+
+  def retry?(_request, %Req.Response{status: status}),
+    do: status in [408, 500, 502, 503, 504]
+
+  def retry?(_request, exception) when is_exception(exception), do: true
 
   @doc "Maps a Req result to `{:ok, body}` or a normalized error."
   @spec handle({:ok, Req.Response.t()} | {:error, Exception.t()}) ::
@@ -22,7 +43,7 @@ defmodule Folio.Clients.HTTP do
           | {:error, :rate_limited | {:http_status, pos_integer()} | {:network, Exception.t()}}
   def handle({:ok, %Req.Response{status: 200, body: body}}), do: {:ok, body}
 
-  def handle({:ok, %Req.Response{status: status}}) when status in [429, 999],
+  def handle({:ok, %Req.Response{status: status}}) when status in @rate_limit_statuses,
     do: {:error, :rate_limited}
 
   def handle({:ok, %Req.Response{status: status}}), do: {:error, {:http_status, status}}

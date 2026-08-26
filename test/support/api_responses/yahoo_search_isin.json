@@ -1,0 +1,21 @@
+{
+    "explains": [],
+    "count": 1,
+    "quotes": [
+        {
+            "exchange": "STU",
+            "shortname": "EUWAX Gold II",
+            "quoteType": "MUTUALFUND",
+            "symbol": "EWG2.SG",
+            "index": "quotes",
+            "score": 20002.0,
+            "typeDisp": "Fund",
+            "longname": "EUWAX Gold II",
+            "exchDisp": "Stuttgart",
+            "isYahooFinance": true
+        }
+    ],
+    "news": [],
+    "nav": [],
+    "lists": []
+}
