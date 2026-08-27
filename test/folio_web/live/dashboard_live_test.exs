@@ -213,6 +213,39 @@ defmodule FolioWeb.DashboardLiveTest do
       assert_push_event(view, "chart:data", %{points: points, currency: "USD"})
       assert points != []
     end
+
+    test "asset page shows position tiles comparing now to buy time", %{
+      conn: conn,
+      bitcoin: bitcoin
+    } do
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      view |> element("#asset-#{bitcoin.id}") |> render_click()
+      assert_patch(view, ~p"/assets/#{bitcoin.id}")
+
+      assert has_element?(view, "#asset-position")
+      assert view |> element("#asset-position-value") |> render() =~ "at buy"
+      assert view |> element("#asset-position-price") |> render() =~ "at buy"
+      assert has_element?(view, "#asset-position-profit")
+      assert has_element?(view, "#asset-position-return")
+    end
+
+    test "switching the asset currency recomputes the position tiles", %{
+      conn: conn,
+      bitcoin: bitcoin
+    } do
+      seed_fx_rates("USD", Date.add(Date.utc_today(), -40), Date.utc_today(), "1.25", "0")
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      view |> element("#asset-#{bitcoin.id}") |> render_click()
+      assert_patch(view, ~p"/assets/#{bitcoin.id}")
+      eur_value = view |> element("#asset-position-value") |> render()
+
+      view |> element("#asset-currency-USD") |> render_click()
+
+      usd_value = view |> element("#asset-position-value") |> render()
+      refute usd_value == eur_value
+    end
   end
 
   describe "asset chart visibility" do
@@ -259,6 +292,35 @@ defmodule FolioWeb.DashboardLiveTest do
 
       refute has_element?(view, "#asset-unresolved")
       refute has_element?(view, "#asset-chart")
+    end
+  end
+
+  describe "asset position tiles" do
+    test "hidden once the position is fully sold", %{conn: conn, portfolio: portfolio} do
+      today = Date.utc_today()
+      bitcoin = crypto_asset_fixture(%{name: "Bitcoin", symbol: "BTC"})
+      seed_daily_prices(bitcoin.id, Date.add(today, -10), today, "100", "1")
+
+      transaction_fixture(%{
+        portfolio_id: portfolio.id,
+        asset_id: bitcoin.id,
+        executed_at: DateTime.new!(Date.add(today, -8), ~T[10:00:00], "Etc/UTC"),
+        quantity: "2",
+        price_per_unit: "100"
+      })
+
+      transaction_fixture(%{
+        portfolio_id: portfolio.id,
+        asset_id: bitcoin.id,
+        type: :sell,
+        executed_at: DateTime.new!(Date.add(today, -1), ~T[10:00:00], "Etc/UTC"),
+        quantity: "2",
+        price_per_unit: "108"
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+
+      refute has_element?(view, "#asset-position")
     end
   end
 

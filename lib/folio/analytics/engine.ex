@@ -79,6 +79,31 @@ defmodule Folio.Analytics.Engine do
     |> Kernel.||(@zero)
   end
 
+  @typedoc "A buy transaction slice not yet consumed by a later sell."
+  @type lot :: %{
+          quantity: Decimal.t(),
+          price_per_unit: Decimal.t(),
+          currency: String.t(),
+          executed_at: DateTime.t()
+        }
+
+  @doc """
+  Remaining open lots for one asset's transactions (ascending by
+  `executed_at`), after matching sells against the oldest buys first (FIFO).
+  Transactions carry no lot identifier, so FIFO is the matching convention
+  used for "bought at" figures throughout the app.
+  """
+  @spec open_lots([map()]) :: [lot()]
+  def open_lots(txns) do
+    Enum.reduce(txns, [], fn
+      %{type: :buy} = txn, lots ->
+        lots ++ [Map.take(txn, [:quantity, :price_per_unit, :currency, :executed_at])]
+
+      %{type: :sell, quantity: quantity}, lots ->
+        consume_lots(lots, quantity)
+    end)
+  end
+
   @doc "Cumulative signed quantity per asset at `t` (buys +, sells -)."
   @spec holdings_at(Dataset.t(), DateTime.t()) :: %{pos_integer() => Decimal.t()}
   def holdings_at(%Dataset{txns: txns}, t) do
@@ -149,6 +174,24 @@ defmodule Folio.Analytics.Engine do
       end
 
     convert(cashflow, currency, base_currency, fx, executed_at)
+  end
+
+  defp consume_lots(lots, quantity) do
+    if Decimal.compare(quantity, @zero) != :gt do
+      lots
+    else
+      consume_positive(lots, quantity)
+    end
+  end
+
+  defp consume_positive([], _quantity), do: []
+
+  defp consume_positive([%{quantity: lot_quantity} = lot | rest], quantity) do
+    case Decimal.compare(lot_quantity, quantity) do
+      :gt -> [%{lot | quantity: Decimal.sub(lot_quantity, quantity)} | rest]
+      :eq -> rest
+      :lt -> consume_lots(rest, Decimal.sub(quantity, lot_quantity))
+    end
   end
 
   defp signed_quantity(%{type: :buy, quantity: quantity}), do: quantity

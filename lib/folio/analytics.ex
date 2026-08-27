@@ -104,6 +104,52 @@ defmodule Folio.Analytics do
     |> Enum.sort_by(& &1.value, {:desc, Decimal})
   end
 
+  @type position :: %{
+          quantity: Decimal.t(),
+          value_now: Decimal.t(),
+          value_buy: Decimal.t(),
+          price_now: Decimal.t(),
+          price_buy: Decimal.t(),
+          profit_abs: Decimal.t(),
+          profit_pct: Decimal.t() | nil
+        }
+
+  @doc """
+  Aggregate position for the asset's currently held quantity: value and
+  price-per-unit now vs. at buy time, and profit since buy, all in the
+  display currency. Held quantity and buy price come from FIFO-matching
+  sells against the oldest buys first (`Engine.open_lots/1`). Nil when
+  nothing is currently held, the current price is unknown, or a needed FX
+  rate is missing.
+  """
+  @spec asset_position(pos_integer(), pos_integer(), String.t(), String.t(), keyword()) ::
+          position() | nil
+  def asset_position(portfolio_id, asset_id, quote_currency, display_currency, opts \\ []) do
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+    lots = portfolio_id |> Portfolios.list_transactions(asset_id: asset_id) |> Engine.open_lots()
+    quantity = Enum.reduce(lots, @zero, &Decimal.add(&1.quantity, &2))
+
+    with false <- Decimal.eq?(quantity, @zero),
+         %{price: current_price} <- MarketData.latest_price(asset_id),
+         %Decimal{} = price_now <- convert(current_price, quote_currency, display_currency, now),
+         %Decimal{} = value_buy <- lots_value(lots, display_currency, now) do
+      value_now = Decimal.mult(quantity, price_now)
+      profit_abs = Decimal.sub(value_now, value_buy)
+
+      %{
+        quantity: quantity,
+        value_now: value_now,
+        value_buy: value_buy,
+        price_now: price_now,
+        price_buy: Decimal.div(value_buy, quantity),
+        profit_abs: profit_abs,
+        profit_pct: percentage(profit_abs, value_buy)
+      }
+    else
+      _missing -> nil
+    end
+  end
+
   @doc """
   Converts an amount between currencies using stored EUR-pivot FX rates at
   `at`. Nil when a needed rate is entirely unknown.
@@ -121,6 +167,20 @@ defmodule Folio.Analytics do
       |> Map.new(&{&1, currency_rates(&1)})
 
     Engine.convert(amount, from_currency, to_currency, fx, at)
+  end
+
+  defp lots_value(lots, display_currency, at) do
+    Enum.reduce_while(lots, @zero, fn lot, acc ->
+      case convert(
+             Decimal.mult(lot.quantity, lot.price_per_unit),
+             lot.currency,
+             display_currency,
+             at
+           ) do
+        nil -> {:halt, nil}
+        converted -> {:cont, Decimal.add(acc, converted)}
+      end
+    end)
   end
 
   defp window_change(_dataset, [], _value_now, _now, _display_currency) do
