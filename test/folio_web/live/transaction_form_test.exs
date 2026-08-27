@@ -12,7 +12,7 @@ defmodule FolioWeb.TransactionFormTest do
   setup :bootstrap_default_user
 
   defp stub_remote_search do
-    Req.Test.stub(Folio.Clients, fn conn ->
+    Req.Test.stub(Folio.MarketData.Sources, fn conn ->
       case {conn.host, conn.request_path} do
         {"api.coingecko.com", "/api/v3/search"} ->
           json_body(conn, ~s({"coins":[]}))
@@ -27,10 +27,10 @@ defmodule FolioWeb.TransactionFormTest do
   end
 
   defp stub_isin_search do
-    Req.Test.stub(Folio.Clients, fn conn ->
+    Req.Test.stub(Folio.MarketData.Sources, fn conn ->
       case conn.request_path do
+        "/v3/mapping" -> json_fixture(conn, "openfigi_not_found.json")
         "/v1/finance/search" -> json_fixture(conn, "yahoo_search_isin.json")
-        "/v8/finance/chart/" <> _symbol -> json_fixture(conn, "yahoo_chart_nvda.json")
       end
     end)
   end
@@ -55,11 +55,11 @@ defmodule FolioWeb.TransactionFormTest do
 
       html = render_async(view)
       assert html =~ "NVIDIA Corporation"
-      assert view |> element("#candidate-0") |> render() =~ "NVDA · NasdaqGS · USD"
+      assert view |> element("#candidate-0") |> render() =~ "NVDA · Nasdaq · USD"
     end
 
     test "local matches surface without any remote call", %{conn: conn} do
-      asset = stock_asset_fixture(%{name: "NVIDIA Corporation", symbol: "NVDA"})
+      asset = stock_asset_fixture(%{name: "NVIDIA Corporation"})
       stub_remote_search()
       {:ok, view, _html} = live(conn, ~p"/transactions/new")
 
@@ -70,7 +70,7 @@ defmodule FolioWeb.TransactionFormTest do
       render_async(view)
       view |> element("#candidate-0") |> render_click()
 
-      assert view |> element("#selected-asset") |> render() =~ asset.symbol
+      assert view |> element("#selected-asset") |> render() =~ asset.ticker
     end
 
     test "selecting a candidate locks it in and clearing reopens the search", %{conn: conn} do
@@ -144,7 +144,7 @@ defmodule FolioWeb.TransactionFormTest do
     end
 
     test "a typed ISIN is stored on an asset that already exists locally", %{conn: conn} do
-      asset = stock_asset_fixture(%{name: "NVIDIA Corporation", symbol: "NVDA"})
+      asset = stock_asset_fixture(%{name: "NVIDIA Corporation", isin: nil})
       stub_remote_search()
       {:ok, view, _html} = live(conn, ~p"/transactions/new")
 
@@ -172,7 +172,7 @@ defmodule FolioWeb.TransactionFormTest do
 
   describe "provider health" do
     test "a rate-limited search says so instead of showing nothing", %{conn: conn} do
-      Req.Test.stub(Folio.Clients, fn conn -> json_body(conn, "{}", 429) end)
+      Req.Test.stub(Folio.MarketData.Sources, fn conn -> json_body(conn, "{}", 429) end)
       {:ok, view, _html} = live(conn, ~p"/transactions/new")
 
       view |> element("#asset-search-form") |> render_change(%{"query" => "nvidia"})
@@ -185,7 +185,7 @@ defmodule FolioWeb.TransactionFormTest do
     end
 
     test "any other provider failure reports search as unavailable", %{conn: conn} do
-      Req.Test.stub(Folio.Clients, fn conn -> json_body(conn, "{}", 500) end)
+      Req.Test.stub(Folio.MarketData.Sources, fn conn -> json_body(conn, "{}", 500) end)
       {:ok, view, _html} = live(conn, ~p"/transactions/new")
 
       view |> element("#asset-search-form") |> render_change(%{"query" => "nvidia"})
@@ -214,6 +214,9 @@ defmodule FolioWeb.TransactionFormTest do
       {:ok, view, _html} = live(conn, ~p"/transactions/new")
       search_and_select_nvda(view)
 
+      # A text hit carries no ISIN; identity requires one, so the user types it.
+      view |> element("#asset-isin-form") |> render_change(%{"isin" => "US67066G1040"})
+
       view
       |> element("#transaction-form")
       |> render_submit(%{
@@ -231,6 +234,9 @@ defmodule FolioWeb.TransactionFormTest do
 
       assert [asset] = Assets.search_local("NVDA")
       assert asset.quote_currency == "USD"
+      assert asset.ticker == "NVDA"
+      assert asset.mic == "XNAS"
+      assert asset.isin == "US67066G1040"
       assert_enqueued(worker: BackfillAssetPrices, args: %{asset_id: asset.id})
 
       assert [transaction] = Portfolios.list_transactions(portfolio.id)
@@ -241,7 +247,7 @@ defmodule FolioWeb.TransactionFormTest do
       assert transaction.currency == "USD"
     end
 
-    test "manual entry creates a yahoo-backed asset when search is no help", %{
+    test "manual entry creates a vendor-neutral asset when search is no help", %{
       conn: conn,
       portfolio: portfolio
     } do
@@ -254,13 +260,12 @@ defmodule FolioWeb.TransactionFormTest do
       |> element("#transaction-form")
       |> render_submit(%{
         "manual" => %{
-          "symbol" => "ACME.DE",
+          "code" => "ACME",
           "name" => "Acme SE",
           "kind" => "stock",
-          "exchange" => "XETRA",
+          "mic" => "XETR",
           "quote_currency" => "EUR",
-          "isin" => "de000ewg2ld7",
-          "wkn" => "ewg2ld"
+          "isin" => "de000ewg2ld7"
         },
         "transaction" => %{
           "date" => "2026-08-20",
@@ -272,11 +277,11 @@ defmodule FolioWeb.TransactionFormTest do
 
       assert_patch(view, ~p"/")
 
-      assert [asset] = Assets.search_local("ACME.DE")
-      assert asset.price_source == :yahoo
-      assert asset.source_id == "ACME.DE"
+      assert [asset] = Assets.search_local("ACME")
+      assert asset.ticker == "ACME"
+      assert asset.mic == "XETR"
       assert asset.isin == "DE000EWG2LD7"
-      assert asset.wkn == "EWG2LD"
+      assert asset.kind == :stock
       assert [_transaction] = Portfolios.list_transactions(portfolio.id)
     end
   end

@@ -59,12 +59,18 @@ defmodule Folio.DevSeeds do
 
   # Direct inserts on purpose: `Assets.create_asset/1` would enqueue network
   # backfills, which seeds must not trigger.
-  defp ensure_asset(attrs) do
-    %Asset{}
-    |> Asset.changeset(attrs)
-    |> Repo.insert!(on_conflict: :nothing, conflict_target: [:price_source, :source_id])
+  defp ensure_asset(%{kind: :crypto, symbol: symbol} = attrs) do
+    case Repo.get_by(Asset, symbol: symbol, kind: :crypto) do
+      nil -> %Asset{} |> Asset.changeset(attrs) |> Repo.insert!()
+      asset -> asset
+    end
+  end
 
-    Repo.get_by!(Asset, price_source: attrs.price_source, source_id: attrs.source_id)
+  defp ensure_asset(%{isin: isin, mic: mic} = attrs) do
+    case Repo.get_by(Asset, isin: isin, mic: mic) do
+      nil -> %Asset{} |> Asset.changeset(attrs) |> Repo.insert!()
+      asset -> asset
+    end
   end
 
   defp bitcoin_attrs do
@@ -72,33 +78,29 @@ defmodule Folio.DevSeeds do
       symbol: "BTC",
       name: "Bitcoin",
       kind: :crypto,
-      quote_currency: "EUR",
-      price_source: :coingecko,
-      source_id: "bitcoin"
+      quote_currency: "EUR"
     }
   end
 
   defp etf_attrs do
     %{
-      symbol: "EUNL.DE",
+      ticker: "EUNL",
       name: "iShares Core MSCI World UCITS ETF",
       kind: :etf,
-      exchange: "XETRA",
-      quote_currency: "EUR",
-      price_source: :yahoo,
-      source_id: "EUNL.DE"
+      mic: "XETR",
+      isin: "IE00B4L5Y983",
+      quote_currency: "EUR"
     }
   end
 
   defp stock_attrs do
     %{
-      symbol: "NVDA",
+      ticker: "NVDA",
       name: "NVIDIA Corporation",
       kind: :stock,
-      exchange: "NasdaqGS",
-      quote_currency: "USD",
-      price_source: :yahoo,
-      source_id: "NVDA"
+      mic: "XNAS",
+      isin: "US67066G1040",
+      quote_currency: "USD"
     }
   end
 

@@ -1,8 +1,8 @@
 defmodule Folio.MarketData.Workers.RefreshCryptoPrices do
   @moduledoc """
-  Cron (~15 min): fetches current prices for all crypto assets in one batched
-  call per quote currency and stores them as intraday ticks. One failed
-  currency group does not fail the others.
+  Cron (~15 min): fetches current prices for all crypto assets through the
+  Quote chain - one batched provider call per quote currency - and stores
+  them as intraday ticks. One failed currency group does not fail the others.
   """
 
   @max_attempts 3
@@ -18,11 +18,11 @@ defmodule Folio.MarketData.Workers.RefreshCryptoPrices do
 
   @impl true
   def perform(%Oban.Job{} = job) do
-    assets = Assets.list_assets_by_source(:coingecko)
+    listings = Enum.map(Assets.list_refreshable(:crypto), &Assets.listing/1)
 
-    case assets do
+    case listings do
       [] -> :ok
-      assets -> refresh_groups(Enum.group_by(assets, & &1.quote_currency), job)
+      listings -> refresh_groups(Enum.group_by(listings, & &1.quote_currency), job)
     end
   end
 
@@ -30,22 +30,23 @@ defmodule Folio.MarketData.Workers.RefreshCryptoPrices do
     now = DateTime.utc_now()
 
     results =
-      for {vs_currency, assets} <- groups do
-        refresh_group(vs_currency, assets, now)
+      for {_currency, listings} <- groups do
+        refresh_group(listings, now)
       end
 
     cond do
       :rate_limited in results -> Backoff.snooze_or_cancel(job, @max_attempts, @snooze_limit)
-      Enum.all?(results, &(&1 != :ok)) -> {:error, :all_sources_failed}
+      Enum.all?(results, &(&1 == :error)) -> {:error, :all_sources_failed}
       true -> :ok
     end
   end
 
-  defp refresh_group(vs_currency, assets, now) do
-    case crypto_client().current_prices(Enum.map(assets, & &1.source_id), vs_currency) do
-      {:ok, prices} ->
-        for asset <- assets, price = prices[asset.source_id], not is_nil(price) do
-          :ok = MarketData.upsert_intraday_prices(asset.id, [%{at: now, price: price}])
+  defp refresh_group(listings, now) do
+    case MarketData.fetch_quotes(listings) do
+      {:ok, quotes} ->
+        for {asset_id, %{price: price} = quote_result} <- quotes do
+          at = quote_result.at || now
+          :ok = MarketData.upsert_intraday_prices(asset_id, [%{at: at, price: price}])
         end
 
         :ok
@@ -53,11 +54,12 @@ defmodule Folio.MarketData.Workers.RefreshCryptoPrices do
       {:error, :rate_limited} ->
         :rate_limited
 
+      {:error, :unsupported} ->
+        :skipped
+
       {:error, reason} ->
-        Logger.warning("crypto price refresh failed for #{vs_currency}: #{inspect(reason)}")
+        Logger.warning("crypto price refresh failed: #{inspect(reason)}")
         :error
     end
   end
-
-  defp crypto_client, do: Application.get_env(:folio, :clients)[:crypto]
 end

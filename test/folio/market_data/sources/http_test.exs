@@ -1,7 +1,7 @@
-defmodule Folio.Clients.HTTPTest do
+defmodule Folio.MarketData.Sources.HTTPTest do
   use ExUnit.Case, async: true
 
-  alias Folio.Clients.HTTP
+  alias Folio.MarketData.Sources.HTTP
 
   describe "retry?/2" do
     test "a rate limit is never retried - asking again only deepens the throttle" do

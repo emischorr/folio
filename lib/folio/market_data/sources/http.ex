@@ -1,10 +1,10 @@
-defmodule Folio.Clients.HTTP do
+defmodule Folio.MarketData.Sources.HTTP do
   @moduledoc """
-  Shared Req plumbing for all market-data clients.
+  Shared Req plumbing for all market-data sources.
 
   JSON numbers decode as `Decimal`s (`floats: :decimals`) so floats never
   enter the system; integers still decode as integers, hence `to_decimal/1`.
-  Test env injects `plug: {Req.Test, Folio.Clients}` via `:req_options`.
+  Test env injects `plug: {Req.Test, ...}` via `:req_options`.
   """
 
   # 999 is Yahoo's own throttle code.
@@ -25,8 +25,8 @@ defmodule Folio.Clients.HTTP do
 
   @doc """
   Retry predicate. Like Req's `:transient`, except a rate limit is never
-  retried - Yahoo's search endpoint throttles per IP, and asking again
-  immediately only deepens it. Callers snooze on `:rate_limited` instead.
+  retried - free endpoints throttle per IP, and asking again immediately
+  only deepens it. Callers fall through the chain on `:rate_limited` instead.
   """
   @spec retry?(Req.Request.t(), Req.Response.t() | Exception.t()) :: boolean()
   def retry?(_request, %Req.Response{status: status}) when status in @rate_limit_statuses,

@@ -47,7 +47,7 @@ defmodule Folio.MarketData.Workers.NightlyRollup do
   end
 
   defp fetch_and_store_rates(currencies, job) do
-    case fx_client().latest_rates(currencies) do
+    case MarketData.fetch_latest_rates(currencies) do
       {:ok, %{date: date, rates: rates}} ->
         Enum.each(rates, fn {currency, rate} ->
           :ok = MarketData.upsert_fx_rates(currency, [%{date: date, rate: rate}])
@@ -65,6 +65,4 @@ defmodule Folio.MarketData.Workers.NightlyRollup do
 
   defp args_today(%{"today" => iso}), do: Date.from_iso8601!(iso)
   defp args_today(_args), do: Date.utc_today()
-
-  defp fx_client, do: Application.get_env(:folio, :clients)[:fx]
 end

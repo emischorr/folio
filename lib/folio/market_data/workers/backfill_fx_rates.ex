@@ -23,7 +23,7 @@ defmodule Folio.MarketData.Workers.BackfillFxRates do
   def perform(%Oban.Job{args: %{"currency" => currency, "from" => from_iso}} = job) do
     from = Date.from_iso8601!(from_iso)
 
-    case fx_client().historical_rates([currency], from, Date.utc_today()) do
+    case MarketData.fetch_historical_rates([currency], from, Date.utc_today()) do
       {:ok, entries} ->
         rows =
           for %{date: date, rates: %{^currency => rate}} <- entries, do: %{date: date, rate: rate}
@@ -37,6 +37,4 @@ defmodule Folio.MarketData.Workers.BackfillFxRates do
         {:error, reason}
     end
   end
-
-  defp fx_client, do: Application.get_env(:folio, :clients)[:fx]
 end

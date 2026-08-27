@@ -1,8 +1,9 @@
 defmodule Folio.Assets do
   @moduledoc """
-  Globally shared assets and their resolution from user-typed names or
-  tickers. Technical price-source fields are filled by the resolver or by
-  manual candidate construction, never typed directly by users.
+  Globally shared assets and their resolution from user-typed names,
+  tickers or identifiers. Assets carry only vendor-neutral identity
+  (ISIN + MIC + ticker for securities, symbol for crypto); everything
+  provider-specific lives behind `Folio.MarketData`.
   """
 
   import Ecto.Query
@@ -12,6 +13,7 @@ defmodule Folio.Assets do
   alias Folio.Assets.Identifier
   alias Folio.Assets.Resolver
   alias Folio.MarketData
+  alias Folio.MarketData.Listing
   alias Folio.Repo
 
   @initial_history_days 30
@@ -34,8 +36,8 @@ defmodule Folio.Assets do
   def list_assets, do: Repo.all(from a in Asset, order_by: [asc: a.symbol])
 
   @doc """
-  Local search: substring match over symbol and name (case-insensitive), or
-  an exact match on ISIN or WKN.
+  Local search: substring match over ticker, symbol and name
+  (case-insensitive), or an exact match on ISIN.
   """
   @spec search_local(String.t()) :: [Asset.t()]
   def search_local(query) do
@@ -45,9 +47,9 @@ defmodule Folio.Assets do
     Repo.all(
       from a in Asset,
         where:
-          ilike(a.symbol, ^pattern) or ilike(a.name, ^pattern) or a.isin == ^identifier or
-            a.wkn == ^identifier,
-        order_by: [asc: a.symbol],
+          ilike(a.ticker, ^pattern) or ilike(a.symbol, ^pattern) or ilike(a.name, ^pattern) or
+            a.isin == ^identifier,
+        order_by: [asc: a.name],
         limit: ^@search_limit
     )
   end
@@ -61,9 +63,9 @@ defmodule Folio.Assets do
   def resolve(query), do: Resolver.resolve(query)
 
   @doc """
-  Creates an asset from a resolver candidate (or an equivalent manually built
-  one), storing the source mapping, and enqueues an initial price backfill.
-  Returns the existing asset when the source mapping is already present.
+  Creates an asset from a resolver candidate or manual entry - the attrs are
+  the same vendor-neutral identity either way - and enqueues an initial price
+  backfill.
   """
   @spec create_asset(map()) :: {:ok, Asset.t()} | {:error, Ecto.Changeset.t()}
   def create_asset(attrs) do
@@ -75,37 +77,38 @@ defmodule Folio.Assets do
   end
 
   @doc """
-  Creates an asset from manual entry (remote search unavailable): the user
-  supplies symbol, name, kind, quote currency and optionally exchange. The
-  source mapping is derived - equities map to the equity provider keyed by
-  ticker; crypto requires the provider's coin id as `:source_id`.
+  Completes the identity of an existing asset (ISIN, MIC, ticker). Only
+  fields currently blank on the asset are written, so a stored identifier is
+  never silently overwritten. When the asset becomes fully resolved, its
+  price backfill is enqueued.
   """
-  @spec create_manual_asset(map()) :: {:ok, Asset.t()} | {:error, Ecto.Changeset.t()}
-  def create_manual_asset(%{kind: :crypto} = attrs) do
-    create_asset(Map.put(attrs, :price_source, :coingecko))
-  end
-
-  def create_manual_asset(%{symbol: symbol} = attrs) do
-    attrs
-    |> Map.put(:price_source, :yahoo)
-    |> Map.put(:source_id, symbol)
-    |> create_asset()
-  end
-
-  @doc """
-  Fills in the identifiers of an existing asset. Only keys that are present
-  and currently blank on the asset are written, so a stored identifier is
-  never silently overwritten.
-  """
-  @spec update_identifiers(pos_integer(), map()) ::
+  @spec resolve_identity(pos_integer(), map()) ::
           {:ok, Asset.t()} | {:error, Ecto.Changeset.t()} | :noop
-  def update_identifiers(asset_id, attrs) do
-    asset = get_asset!(asset_id)
+  def resolve_identity(asset_id, attrs) do
+    changeset = asset_id |> get_asset!() |> Asset.identity_changeset(attrs)
 
-    case fillable_identifiers(asset, attrs) do
-      changes when map_size(changes) == 0 -> :noop
-      changes -> asset |> Asset.identifiers_changeset(changes) |> Repo.update()
+    if changeset.changes == %{} do
+      :noop
+    else
+      with {:ok, updated} <- Repo.update(changeset) do
+        ensure_history_when_resolved(updated)
+        {:ok, updated}
+      end
     end
+  end
+
+  @doc "The vendor-neutral listing shape `Folio.MarketData` works with."
+  @spec listing(Asset.t()) :: Listing.t()
+  def listing(%Asset{} = asset) do
+    Listing.new(%{
+      asset_id: asset.id,
+      kind: asset.kind,
+      symbol: asset.symbol,
+      ticker: asset.ticker,
+      isin: asset.isin,
+      mic: asset.mic,
+      quote_currency: asset.quote_currency
+    })
   end
 
   @doc "Distinct quote currencies across all assets."
@@ -114,19 +117,29 @@ defmodule Folio.Assets do
     Repo.all(from a in Asset, distinct: true, select: a.quote_currency)
   end
 
-  @doc "Assets fetched from the given source (`:coingecko` or `:yahoo`)."
-  @spec list_assets_by_source(Asset.price_source()) :: [Asset.t()]
-  def list_assets_by_source(price_source) do
-    Repo.all(from a in Asset, where: a.price_source == ^price_source, order_by: [asc: a.id])
+  @doc """
+  Assets the periodic refresh should poll: crypto by kind, securities by kind
+  minus those still missing identity (nothing can fetch an unresolved asset).
+  """
+  @spec list_refreshable(:crypto | :security) :: [Asset.t()]
+  def list_refreshable(:crypto) do
+    Repo.all(from a in Asset, where: a.kind == :crypto, order_by: [asc: a.id])
   end
 
-  defp fillable_identifiers(%{isin: isin, wkn: wkn}, attrs) do
-    for {field, stored} <- [isin: isin, wkn: wkn],
-        is_nil(stored),
-        value = attrs[field],
-        not is_nil(value),
-        into: %{},
-        do: {field, value}
+  def list_refreshable(:security) do
+    Repo.all(
+      from a in Asset,
+        where:
+          a.kind != :crypto and not is_nil(a.isin) and not is_nil(a.mic) and not is_nil(a.ticker),
+        order_by: [asc: a.id]
+    )
+  end
+
+  defp ensure_history_when_resolved(asset) do
+    unless Asset.unresolved?(asset) do
+      from_date = Date.add(Date.utc_today(), -@initial_history_days)
+      :ok = MarketData.ensure_history(asset.id, from_date, asset.quote_currency)
+    end
   end
 
   defp sanitize_like(query) do

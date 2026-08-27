@@ -66,8 +66,8 @@ already expect (`postgres` / `postgres`). Data persists in `.docker/postgres`.
 ## Architecture
 
 - `lib/folio/` — contexts and domain logic: `accounts/`, `portfolios/`, `assets/`,
-  `market_data/` (with `workers/` for the Oban jobs), `analytics/`, plus `clients/`
-  (behaviour-backed market data providers), `application.ex`, `bootstrap.ex`, `repo.ex`.
+  `market_data/` (with `sources/` for the behaviour-backed providers and `workers/`
+  for the Oban jobs), `analytics/`, `application.ex`, `bootstrap.ex`, `repo.ex`.
 - `lib/folio_web/` — `router.ex`, `endpoint.ex`, `user_auth.ex`, `live/dashboard_live.ex`,
   `controllers/`, `components/` (`core_components.ex`, `layouts.ex`).
 - `lib/folio_web.ex` — the `use FolioWeb, :controller | :html | :live_view | ...` entrypoint.
@@ -95,9 +95,9 @@ already expect (`postgres` / `postgres`). Data persists in `.docker/postgres`.
   sends - so a throttle can stop prices updating, not just search. **Never probe either
   endpoint in a loop, and never poll to see whether a throttle has cleared.** Develop against the recorded fixtures in
   `test/support/api_responses/` and spend live calls only on one final check.
-  `Folio.Assets.SearchCache` sits in front of every resolution lookup - 10 minutes
+  `Folio.MarketData.Cache` sits in front of every resolution lookup - 10 minutes
   for hits, a 60-second negative cache for 429s - and `mix precommit` never touches
-  the network. `Folio.Clients.HTTP.retry?/2` also refuses to retry a 429: Req's
+  the network. `Folio.MarketData.Sources.HTTP.retry?/2` also refuses to retry a 429: Req's
   built-in `:transient` policy turns one throttled lookup into three requests. On the
   job side, `Folio.MarketData.Backoff` caps how often a rate-limited worker may snooze
   and then cancels it - an uncapped snooze keeps a throttled endpoint under load

@@ -10,7 +10,7 @@ defmodule Folio.MarketData.Workers.NightlyRollupTest do
 
   test "rolls up yesterday's closes, prunes past retention, and refreshes FX" do
     crypto = crypto_asset_fixture()
-    stock = stock_asset_fixture(%{source_id: "NVDA"})
+    stock = stock_asset_fixture()
 
     # Yesterday's ticks (relative to the injected "today" 2026-08-25).
     :ok =
@@ -22,7 +22,7 @@ defmodule Folio.MarketData.Workers.NightlyRollupTest do
     # A tick past the 8-day retention window.
     seed_intraday_prices(crypto.id, ~U[2026-08-10 12:00:00Z], ~U[2026-08-10 12:00:00Z], "90")
 
-    Req.Test.stub(Folio.Clients, fn conn ->
+    Req.Test.stub(Folio.MarketData.Sources, fn conn ->
       assert conn.request_path == "/v1/latest"
       assert conn.params["symbols"] == "USD"
       json_fixture(conn, "frankfurter_latest.json")

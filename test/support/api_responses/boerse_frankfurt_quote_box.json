@@ -1,0 +1,20 @@
+{
+    "askLimit": 127.23,
+    "askSize": 1757,
+    "bidLimit": 127.215,
+    "bidSize": 1179,
+    "changeToPrevDayAbsolute": 0.5550,
+    "changeToPrevDayInPercent": 0.4400,
+    "instrumentStatus": "Active",
+    "isin": "IE00B4L5Y983",
+    "lastPrice": 127.235,
+    "lastPriceIndicator": null,
+    "nominal": false,
+    "open": 127.06,
+    "retailAsk": 127.23,
+    "retailAskSize": 2400,
+    "retailBid": 127.215,
+    "retailBidSize": 2400,
+    "spreadAbsolute": 0.015,
+    "spreadRelative": 0.0117
+}

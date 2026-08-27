@@ -8,14 +8,18 @@ defmodule Folio.MarketData.Workers.RefreshWorkersTest do
 
   alias Folio.MarketData
   alias Folio.MarketData.Workers.RefreshCryptoPrices
-  alias Folio.MarketData.Workers.RefreshEquityPrices
+  alias Folio.MarketData.Workers.RefreshSecurityPrices
+
+  # Monday, 15:00 UTC: Xetra (17:00 CEST) and NYSE/Nasdaq (11:00 New York)
+  # are both in session.
+  @open_now "2026-08-24T15:00:00Z"
 
   describe "RefreshCryptoPrices" do
     test "writes one intraday tick per crypto asset from a single batched call" do
-      bitcoin = crypto_asset_fixture(%{source_id: "bitcoin"})
-      ethereum = crypto_asset_fixture(%{source_id: "ethereum", symbol: "ETH", name: "Ethereum"})
+      bitcoin = crypto_asset_fixture(%{symbol: "BTC"})
+      ethereum = crypto_asset_fixture(%{symbol: "ETH", name: "Ethereum"})
 
-      Req.Test.stub(Folio.Clients, fn conn ->
+      Req.Test.stub(Folio.MarketData.Sources, fn conn ->
         assert conn.request_path == "/api/v3/simple/price"
         assert conn.params["ids"] =~ "bitcoin"
         json_fixture(conn, "coingecko_simple_price.json")
@@ -34,8 +38,8 @@ defmodule Folio.MarketData.Workers.RefreshWorkersTest do
     end
 
     test "rate limiting snoozes, then cancels at the limit" do
-      crypto_asset_fixture(%{source_id: "bitcoin"})
-      Req.Test.stub(Folio.Clients, fn conn -> json_body(conn, "{}", 429) end)
+      crypto_asset_fixture(%{symbol: "BTC"})
+      Req.Test.stub(Folio.MarketData.Sources, fn conn -> json_body(conn, "{}", 429) end)
 
       assert {:cancel, :rate_limited} =
                perform_job(RefreshCryptoPrices, %{}, max_attempts: 6)
@@ -44,60 +48,81 @@ defmodule Folio.MarketData.Workers.RefreshWorkersTest do
     end
   end
 
-  describe "RefreshEquityPrices" do
-    test "trading_hours?/1 opens weekdays 06:00-22:00 UTC only" do
-      assert RefreshEquityPrices.trading_hours?(~U[2026-08-24 12:00:00Z])
-      assert RefreshEquityPrices.trading_hours?(~U[2026-08-24 06:00:00Z])
-      refute RefreshEquityPrices.trading_hours?(~U[2026-08-24 05:59:59Z])
-      refute RefreshEquityPrices.trading_hours?(~U[2026-08-24 22:00:00Z])
-      refute RefreshEquityPrices.trading_hours?(~U[2026-08-22 12:00:00Z])
-      refute RefreshEquityPrices.trading_hours?(~U[2026-08-23 12:00:00Z])
-    end
+  describe "RefreshSecurityPrices" do
+    test "writes a tick per security while its venue is open" do
+      asset = stock_asset_fixture()
 
-    test "writes a tick per equity asset during trading hours" do
-      asset = stock_asset_fixture(%{source_id: "NVDA"})
-
-      Req.Test.stub(Folio.Clients, fn conn ->
+      Req.Test.stub(Folio.MarketData.Sources, fn conn ->
         assert conn.request_path == "/v8/finance/chart/NVDA"
         json_fixture(conn, "yahoo_chart_nvda.json")
       end)
 
-      assert :ok = perform_job(RefreshEquityPrices, %{now: "2026-08-24T12:00:00Z"})
+      assert :ok = perform_job(RefreshSecurityPrices, %{now: @open_now})
 
-      assert [%{at: ~U[2026-08-24 12:00:00Z], price: price}] =
+      # The tick carries the provider's quote time, not the poll time.
+      assert [%{at: ~U[2026-08-25 14:12:22Z], price: price}] =
                MarketData.intraday_prices(asset.id)
 
       assert Decimal.eq?(price, "213.44")
     end
 
-    test "does nothing outside trading hours" do
-      stock_asset_fixture(%{source_id: "NVDA"})
+    test "EUR listings on German venues are quoted by Tradegate first" do
+      asset = etf_asset_fixture()
 
-      assert :ok = perform_job(RefreshEquityPrices, %{now: "2026-08-23T12:00:00Z"})
+      Req.Test.stub(Folio.MarketData.Sources, fn conn ->
+        assert conn.host == "www.tradegatebsx.com"
+        assert conn.params["isin"] == asset.isin
+        json_fixture(conn, "tradegate_refresh.json")
+      end)
+
+      assert :ok = perform_job(RefreshSecurityPrices, %{now: @open_now})
+      assert [%{price: price}] = MarketData.intraday_prices(asset.id)
+      assert Decimal.eq?(price, "127.185")
+    end
+
+    test "skips listings whose venue is closed" do
+      stock_asset_fixture()
+
+      Req.Test.stub(Folio.MarketData.Sources, fn _conn ->
+        raise "a closed venue must not be polled"
+      end)
+
+      # Sunday midday: every venue closed.
+      assert :ok = perform_job(RefreshSecurityPrices, %{now: "2026-08-23T12:00:00Z"})
       assert Folio.Repo.aggregate(Folio.MarketData.IntradayPrice, :count) == 0
     end
 
-    test "one failing symbol does not fail the others" do
-      good = stock_asset_fixture(%{source_id: "NVDA"})
-      stock_asset_fixture(%{source_id: "BROKEN", symbol: "BRK"})
+    test "skips unresolved securities entirely" do
+      stock_asset_fixture(%{mic: nil, isin: nil})
 
-      Req.Test.stub(Folio.Clients, fn conn ->
+      Req.Test.stub(Folio.MarketData.Sources, fn _conn ->
+        raise "an unresolved asset must not be polled"
+      end)
+
+      assert :ok = perform_job(RefreshSecurityPrices, %{now: @open_now})
+    end
+
+    test "one failing listing does not fail the others" do
+      good = stock_asset_fixture()
+      stock_asset_fixture(%{ticker: "BROKEN"})
+
+      Req.Test.stub(Folio.MarketData.Sources, fn conn ->
         case conn.request_path do
           "/v8/finance/chart/NVDA" -> json_fixture(conn, "yahoo_chart_nvda.json")
           "/v8/finance/chart/BROKEN" -> json_body(conn, "{}", 500)
         end
       end)
 
-      assert :ok = perform_job(RefreshEquityPrices, %{now: "2026-08-24T12:00:00Z"})
+      assert :ok = perform_job(RefreshSecurityPrices, %{now: @open_now})
       assert [_tick] = MarketData.intraday_prices(good.id)
     end
 
-    test "errors when every symbol fails" do
-      stock_asset_fixture(%{source_id: "BROKEN"})
-      Req.Test.stub(Folio.Clients, fn conn -> json_body(conn, "{}", 500) end)
+    test "errors when every listing fails" do
+      stock_asset_fixture(%{ticker: "BROKEN"})
+      Req.Test.stub(Folio.MarketData.Sources, fn conn -> json_body(conn, "{}", 500) end)
 
       assert {:error, :all_sources_failed} =
-               perform_job(RefreshEquityPrices, %{now: "2026-08-24T12:00:00Z"})
+               perform_job(RefreshSecurityPrices, %{now: @open_now})
     end
   end
 end

@@ -68,6 +68,7 @@ defmodule Folio.MixProject do
        depth: 1},
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
+      {:tz, "~> 0.28"},
       {:oban, "~> 2.23"},
       {:argon2_elixir, "~> 4.1"},
       {:decimal, "~> 3.0"},

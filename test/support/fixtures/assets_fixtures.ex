@@ -4,59 +4,87 @@ defmodule Folio.AssetsFixtures do
   alias Folio.Assets.Asset
   alias Folio.Repo
 
-  @doc "Inserts a crypto asset (CoinGecko-sourced, EUR-quoted)."
+  @doc "Inserts a crypto asset (EUR-quoted)."
   @spec crypto_asset_fixture(map()) :: Asset.t()
   def crypto_asset_fixture(attrs \\ %{}) do
     insert(
       %{
-        symbol: "BTC",
+        symbol: "BT#{System.unique_integer([:positive])}",
         name: "Bitcoin",
         kind: :crypto,
-        quote_currency: "EUR",
-        price_source: :coingecko,
-        source_id: "bitcoin-#{System.unique_integer([:positive])}"
+        quote_currency: "EUR"
       },
       attrs
     )
   end
 
-  @doc "Inserts a US stock asset (Yahoo-sourced, USD-quoted)."
+  @doc "Inserts a US stock asset (Nasdaq, USD-quoted)."
   @spec stock_asset_fixture(map()) :: Asset.t()
   def stock_asset_fixture(attrs \\ %{}) do
-    unique = System.unique_integer([:positive])
-
     insert(
       %{
-        symbol: "NVDA",
+        ticker: "NVDA",
         name: "NVIDIA Corporation",
         kind: :stock,
-        exchange: "NasdaqGS",
-        quote_currency: "USD",
-        price_source: :yahoo,
-        source_id: "NVDA-#{unique}"
+        mic: "XNAS",
+        isin: unique_isin(),
+        quote_currency: "USD"
       },
       attrs
     )
   end
 
-  @doc "Inserts a EUR-quoted ETF asset (Yahoo-sourced)."
+  @doc "Inserts a EUR-quoted ETF asset (Xetra)."
   @spec etf_asset_fixture(map()) :: Asset.t()
   def etf_asset_fixture(attrs \\ %{}) do
-    unique = System.unique_integer([:positive])
-
     insert(
       %{
-        symbol: "EUNL.DE",
+        ticker: "EUNL",
         name: "iShares Core MSCI World",
         kind: :etf,
-        exchange: "XETRA",
-        quote_currency: "EUR",
-        price_source: :yahoo,
-        source_id: "EUNL.DE-#{unique}"
+        mic: "XETR",
+        isin: unique_isin(),
+        quote_currency: "EUR"
       },
       attrs
     )
   end
+
+  @doc "A syntactically valid, checksummed, unique ISIN."
+  @spec unique_isin() :: String.t()
+  def unique_isin do
+    body =
+      "US#{System.unique_integer([:positive]) |> Integer.to_string() |> String.pad_leading(9, "0") |> String.slice(-9..-1)}"
+
+    body <> isin_check_digit(body)
+  end
+
+  defp isin_check_digit(body) do
+    digits =
+      body
+      |> String.graphemes()
+      |> Enum.flat_map(fn char ->
+        case Integer.parse(char) do
+          {digit, ""} -> [digit]
+          :error -> char |> letter_value() |> Integer.digits()
+        end
+      end)
+
+    sum =
+      digits
+      |> Enum.reverse()
+      |> Enum.with_index()
+      |> Enum.map(fn
+        {digit, index} when rem(index, 2) == 0 -> digit * 2
+        {digit, _index} -> digit
+      end)
+      |> Enum.flat_map(&Integer.digits/1)
+      |> Enum.sum()
+
+    Integer.to_string(rem(10 - rem(sum, 10), 10))
+  end
+
+  defp letter_value(<<char>>), do: char - ?A + 10
 
   defp insert(defaults, attrs) do
     Repo.insert!(struct!(Asset, Map.merge(defaults, attrs)))

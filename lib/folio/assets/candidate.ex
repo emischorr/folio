@@ -1,9 +1,8 @@
 defmodule Folio.Assets.Candidate do
   @moduledoc """
-  A resolver result the UI can present, e.g. "NVIDIA Corporation · NASDAQ ·
-  USD". Carries the technical source mapping so choosing a candidate can
-  create an asset directly. `local_asset_id` is set when the asset already
-  exists locally.
+  A resolver result the UI can present, e.g. "SPYY · Xetra · EUR". Carries
+  only vendor-neutral identity, so choosing a candidate can create an asset
+  directly. `local_asset_id` is set when the asset already exists locally.
   """
 
   alias Folio.Assets.Asset
@@ -11,26 +10,22 @@ defmodule Folio.Assets.Candidate do
   defstruct [
     :kind,
     :symbol,
+    :ticker,
     :name,
-    :exchange,
-    :quote_currency,
-    :price_source,
-    :source_id,
     :isin,
-    :wkn,
+    :mic,
+    :quote_currency,
     :local_asset_id
   ]
 
   @type t :: %__MODULE__{
           kind: Asset.kind(),
-          symbol: String.t(),
+          symbol: String.t() | nil,
+          ticker: String.t() | nil,
           name: String.t(),
-          exchange: String.t() | nil,
-          quote_currency: String.t() | nil,
-          price_source: Asset.price_source(),
-          source_id: String.t(),
           isin: String.t() | nil,
-          wkn: String.t() | nil,
+          mic: String.t() | nil,
+          quote_currency: String.t() | nil,
           local_asset_id: pos_integer() | nil
         }
 
@@ -40,24 +35,25 @@ defmodule Folio.Assets.Candidate do
     %__MODULE__{
       kind: asset.kind,
       symbol: asset.symbol,
+      ticker: asset.ticker,
       name: asset.name,
-      exchange: asset.exchange,
-      quote_currency: asset.quote_currency,
-      price_source: asset.price_source,
-      source_id: asset.source_id,
       isin: asset.isin,
-      wkn: asset.wkn,
+      mic: asset.mic,
+      quote_currency: asset.quote_currency,
       local_asset_id: asset.id
     }
   end
 
-  @doc ~S(Display label like "NVIDIA Corporation · NASDAQ · USD".)
-  @spec label(t()) :: String.t()
-  def label(%__MODULE__{name: name, exchange: exchange, quote_currency: quote_currency}) do
-    [name, exchange, quote_currency]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join(" · ")
-  end
+  @doc "The user-facing code: exchange ticker, or symbol for crypto."
+  @spec display_code(t()) :: String.t() | nil
+  def display_code(%__MODULE__{ticker: ticker, symbol: symbol}), do: ticker || symbol
+
+  @doc "The identity a candidate stands for, used to dedupe local vs remote hits."
+  @spec identity(t()) :: term()
+  def identity(%__MODULE__{kind: :crypto, symbol: symbol}), do: {:crypto, symbol}
+
+  def identity(%__MODULE__{isin: isin, mic: mic, ticker: ticker}),
+    do: {:security, isin, mic, ticker}
 
   @doc "Attributes for `Folio.Assets.create_asset/1`."
   @spec to_attrs(t()) :: map()

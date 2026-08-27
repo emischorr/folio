@@ -147,4 +147,36 @@ defmodule Folio.MarketDataTest do
       assert [%{at: ~U[2025-01-09 00:00:00Z]}] = MarketData.intraday_prices(asset.id)
     end
   end
+
+  describe "latest_prices/1" do
+    test "one batch answer per asset, newest of tick vs close" do
+      import Folio.AssetsFixtures
+
+      tick_asset = crypto_asset_fixture()
+      close_asset = stock_asset_fixture()
+      empty_asset = etf_asset_fixture()
+
+      :ok =
+        MarketData.upsert_daily_prices(tick_asset.id, [
+          %{date: ~D[2026-08-25], price: Decimal.new("100")}
+        ])
+
+      :ok =
+        MarketData.upsert_intraday_prices(tick_asset.id, [
+          %{at: ~U[2026-08-25 14:00:00Z], price: Decimal.new("101")}
+        ])
+
+      :ok =
+        MarketData.upsert_daily_prices(close_asset.id, [
+          %{date: ~D[2026-08-24], price: Decimal.new("50")}
+        ])
+
+      prices = MarketData.latest_prices([tick_asset.id, close_asset.id, empty_asset.id])
+
+      assert %{at: ~U[2026-08-25 14:00:00Z], price: tick_price} = prices[tick_asset.id]
+      assert Decimal.eq?(tick_price, "101")
+      assert %{at: ~U[2026-08-24 00:00:00Z]} = prices[close_asset.id]
+      refute Map.has_key?(prices, empty_asset.id)
+    end
+  end
 end

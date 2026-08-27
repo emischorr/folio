@@ -19,9 +19,20 @@ config :folio, Oban, testing: :manual
 # Bypass the resolution cache: a shared named ETS table would leak stubbed
 # responses between the async suites.
 config :folio, :search_cache, ok_ttl_ms: 0, error_ttl_ms: 0
+config :folio, Folio.MarketData.Sources.CoinGecko, id_ttl_ms: 0
+
+# Budgets generous enough that ordinary tests never trip the limiter; limiter
+# tests start their own instance with tiny budgets.
+config :folio, :rate_limits,
+  tradegate: [capacity: 1000, per_minute: 60_000],
+  boerse_frankfurt: [capacity: 1000, per_minute: 60_000],
+  yahoo: [capacity: 1000, per_minute: 60_000],
+  coin_gecko: [capacity: 1000, per_minute: 60_000],
+  open_figi: [capacity: 1000, per_minute: 60_000],
+  frankfurter: [capacity: 1000, per_minute: 60_000]
 
 # Route all Req HTTP traffic to test stubs; never hit the network
-config :folio, :req_options, plug: {Req.Test, Folio.Clients}, retry: false
+config :folio, :req_options, plug: {Req.Test, Folio.MarketData.Sources}, retry: false
 
 # Fast, weak hashes are fine in test
 config :argon2_elixir, t_cost: 1, m_cost: 8
