@@ -69,6 +69,25 @@ defmodule FolioWeb.DashboardLive do
     {:noreply, socket |> assign(currency: currency) |> refresh_dashboard()}
   end
 
+  def handle_event("select_asset_window", %{"window" => window}, socket) do
+    window =
+      Enum.find(Grid.windows(), socket.assigns.asset_window, &(Atom.to_string(&1) == window))
+
+    {:noreply, socket |> assign(asset_window: window) |> push_asset_chart_data()}
+  end
+
+  def handle_event("select_asset_mode", %{"mode" => mode}, socket) do
+    mode = if mode == "profit", do: :profit, else: :value
+
+    {:noreply, socket |> assign(asset_mode: mode) |> push_asset_chart_data()}
+  end
+
+  def handle_event("select_asset_currency", %{"currency" => currency}, socket) do
+    currency = if currency == "USD", do: "USD", else: "EUR"
+
+    {:noreply, socket |> assign(asset_currency: currency) |> push_asset_chart_data()}
+  end
+
   def handle_event("search_asset", %{"query" => query}, socket) do
     query = String.trim(query)
     socket = assign(socket, search_query: query, asset_error: nil)
@@ -480,6 +499,75 @@ defmodule FolioWeb.DashboardLive do
             <p :if={@identity_error} id="identity-error" class="text-[12px] text-error">
               {@identity_error}
             </p>
+          </div>
+          <div :if={@show_asset_chart?}>
+            <div
+              id="asset-chart"
+              phx-hook="PortfolioChart"
+              phx-update="ignore"
+              data-time-format={@time_format}
+              class="mt-2 h-40 w-full lg:h-[220px]"
+            >
+            </div>
+
+            <div class="mt-3 flex flex-col gap-3 px-6">
+              <div class="flex rounded-full bg-base-200 p-1 tabular-nums">
+                <button
+                  :for={window <- Grid.windows()}
+                  type="button"
+                  id={"asset-window-#{window}"}
+                  phx-click="select_asset_window"
+                  phx-value-window={window}
+                  class={[
+                    "flex-1 cursor-pointer rounded-full py-1.5 text-xs font-semibold",
+                    if(window == @asset_window,
+                      do: "bg-base-100 shadow-sm",
+                      else: "text-base-content/50"
+                    )
+                  ]}
+                >
+                  {window_label(window)}
+                </button>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex rounded-full bg-base-200 p-0.5 text-[11px] font-semibold tabular-nums">
+                  <button
+                    :for={currency <- ["EUR", "USD"]}
+                    type="button"
+                    id={"asset-currency-#{currency}"}
+                    phx-click="select_asset_currency"
+                    phx-value-currency={currency}
+                    class={[
+                      "cursor-pointer rounded-full px-3 py-1",
+                      if(currency == @asset_currency,
+                        do: "bg-base-100 shadow-sm",
+                        else: "text-base-content/50"
+                      )
+                    ]}
+                  >
+                    {currency}
+                  </button>
+                </div>
+                <div class="flex rounded-full bg-base-200 p-0.5 text-[11px] font-semibold">
+                  <button
+                    :for={mode <- [:value, :profit]}
+                    type="button"
+                    id={"asset-mode-#{mode}"}
+                    phx-click="select_asset_mode"
+                    phx-value-mode={mode}
+                    class={[
+                      "cursor-pointer rounded-full px-3 py-1",
+                      if(mode == @asset_mode,
+                        do: "bg-base-100 shadow-sm",
+                        else: "text-base-content/50"
+                      )
+                    ]}
+                  >
+                    {mode |> Atom.to_string() |> String.capitalize()}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
           <div id="asset-transactions" class="flex flex-col gap-2.5 px-4 pb-16 pt-2">
             <.link
@@ -958,15 +1046,21 @@ defmodule FolioWeb.DashboardLive do
       socket.assigns.portfolio_id
       |> Portfolios.list_transactions(asset_id: asset.id)
       |> Enum.reverse()
-      
+
     latest = MarketData.latest_price(asset.id)
 
-    assign(socket,
+    socket
+    |> assign(
       asset: asset,
       transactions: transactions,
       price_asof: latest && latest.at,
-      identity_error: nil
+      identity_error: nil,
+      asset_window: socket.assigns.window,
+      asset_mode: socket.assigns.mode,
+      asset_currency: socket.assigns.currency,
+      show_asset_chart?: not Asset.unresolved?(asset) and not is_nil(latest)
     )
+    |> maybe_push_asset_chart_data()
   end
 
   defp apply_action(socket, :new, _params), do: init_form(socket, %Transaction{}, nil)
@@ -1011,6 +1105,34 @@ defmodule FolioWeb.DashboardLive do
       case mode do
         :value -> Analytics.value_series(portfolio_id, window, currency)
         :profit -> Analytics.profit_series(portfolio_id, window, currency)
+      end
+
+    push_event(socket, "chart:data", %{
+      points:
+        Enum.map(series, &%{time: DateTime.to_unix(&1.at), value: Decimal.to_float(&1.value)}),
+      mode: Atom.to_string(mode),
+      currency: currency
+    })
+  end
+
+  defp maybe_push_asset_chart_data(%{assigns: %{show_asset_chart?: true}} = socket),
+    do: push_asset_chart_data(socket)
+
+  defp maybe_push_asset_chart_data(socket), do: socket
+
+  defp push_asset_chart_data(socket) do
+    %{
+      portfolio_id: portfolio_id,
+      asset: asset,
+      asset_window: window,
+      asset_currency: currency,
+      asset_mode: mode
+    } = socket.assigns
+
+    series =
+      case mode do
+        :value -> Analytics.value_series(portfolio_id, window, currency, asset_id: asset.id)
+        :profit -> Analytics.profit_series(portfolio_id, window, currency, asset_id: asset.id)
       end
 
     push_event(socket, "chart:data", %{
