@@ -33,9 +33,12 @@ defmodule Folio.MarketData.Workers.RefreshWorkersTest do
       assert :ok = perform_job(RefreshCryptoPrices, %{})
     end
 
-    test "rate limiting snoozes" do
+    test "rate limiting snoozes, then cancels at the limit" do
       crypto_asset_fixture(%{source_id: "bitcoin"})
       Req.Test.stub(Folio.Clients, fn conn -> json_body(conn, "{}", 429) end)
+
+      assert {:cancel, :rate_limited} =
+               perform_job(RefreshCryptoPrices, %{}, max_attempts: 6)
 
       assert {:snooze, 120} = perform_job(RefreshCryptoPrices, %{})
     end

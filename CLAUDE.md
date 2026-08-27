@@ -89,15 +89,19 @@ already expect (`postgres` / `postgres`). Data persists in `.docker/postgres`.
 - **Yahoo search is the scarcest resource in this project.**
   `query{1,2}.finance.yahoo.com/v1/finance/search` is rate-limited per IP and answers
   429 far sooner than you would expect - roughly 50 requests across an afternoon
-  earned a throttle that had not lifted two hours later, on both hosts. Its buckets
-  are per-endpoint: `/v8/finance/chart` stays healthy (so prices keep updating) while
-  search is dead, as does OpenFIGI. **Never probe search in a loop, and never poll it
-  to see whether a throttle has cleared.** Develop against the recorded fixtures in
+  earned a throttle that had not lifted two hours later, on both hosts. **`/v8/finance/chart`
+  is not a safe harbour**: it has its own bucket and OpenFIGI has another, but the chart
+  endpoint has been observed answering 429 too, with the browser User-Agent the client
+  sends - so a throttle can stop prices updating, not just search. **Never probe either
+  endpoint in a loop, and never poll to see whether a throttle has cleared.** Develop against the recorded fixtures in
   `test/support/api_responses/` and spend live calls only on one final check.
   `Folio.Assets.SearchCache` sits in front of every resolution lookup - 10 minutes
   for hits, a 60-second negative cache for 429s - and `mix precommit` never touches
   the network. `Folio.Clients.HTTP.retry?/2` also refuses to retry a 429: Req's
-  built-in `:transient` policy turns one throttled lookup into three requests.
+  built-in `:transient` policy turns one throttled lookup into three requests. On the
+  job side, `Folio.MarketData.Backoff` caps how often a rate-limited worker may snooze
+  and then cancels it - an uncapped snooze keeps a throttled endpoint under load
+  forever, because Oban raises `max_attempts` on every snooze.
 - Generators default to `timestamp_type: :utc_datetime` (`config/config.exs`).
 
 ## CodeLead preview contract

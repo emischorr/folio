@@ -94,7 +94,7 @@ changing a single line in `config :folio, :clients`.
 | Data | Provider | Limits and caveats |
 |---|---|---|
 | Crypto search, history, prices | [CoinGecko](https://www.coingecko.com/en/api) — `Folio.Clients.CoinGecko` | Keyless: ~5–15 req/min, history capped at ~365 days. A free demo key raises this to 100/min. |
-| Stock and ETF search, history, prices | Yahoo Finance, unofficial — `Folio.Clients.Yahoo` | Keyless but needs a browser User-Agent (the client sends one). Search results carry no currency, so it is read from the chart endpoint's metadata. Unofficial, and the most likely to break; rate-limit responses are snoozed and retried. |
+| Stock and ETF search, history, prices | Yahoo Finance, unofficial — `Folio.Clients.Yahoo` | Keyless but needs a browser User-Agent (the client sends one). Search results carry no currency, so it is read from the chart endpoint's metadata. Unofficial, and the most likely to break; rate-limit responses are snoozed with a capped, doubling backoff. |
 | ISIN and WKN lookup | [OpenFIGI](https://www.openfigi.com/api) — `Folio.Clients.OpenFigi` | Keyless: 25 req/min per IP; `OPENFIGI_API_KEY` raises that. Maps an identifier to tickers only — it never returns one. |
 | FX rates (daily, EUR pivot) | [Frankfurter](https://frankfurter.dev) / ECB — `Folio.Clients.Frankfurter` | Keyless, business days only — weekend gaps are expected and resolved by "latest rate at or before" lookups. |
 
@@ -116,11 +116,14 @@ resolver each work around one:
   the resolver maps the identifier to tickers through OpenFIGI and searches those.
 
 Yahoo's search endpoint is also rate-limited per IP and returns 429 well before you
-would expect — the chart endpoint used for prices is a separate, far more generous
-bucket. `Folio.Assets.SearchCache` therefore fronts every resolution lookup (10
-minutes for hits, a 60-second negative cache for rate limits), rate-limit responses
-are never retried at the HTTP layer, and the asset picker says so explicitly rather
-than showing an empty dropdown when search is throttled.
+would expect. The chart endpoint used for prices is a separate bucket, but not an
+immune one — it answers 429 too, which stops price backfills rather than search.
+`Folio.Assets.SearchCache` therefore fronts every resolution lookup (10 minutes for
+hits, a 60-second negative cache for rate limits), rate-limit responses are never
+retried at the HTTP layer, and the asset picker says so explicitly rather than
+showing an empty dropdown when search is throttled. Background jobs back off
+exponentially on a 429 and cancel once `Folio.MarketData.Backoff`'s snooze limit is
+reached, so a throttled provider can never leave a job spinning indefinitely.
 
 **No provider returns an ISIN for a ticker.** Yahoo omits it everywhere and OpenFIGI
 only maps in the identifier → ticker direction, so an asset's ISIN is stored when it

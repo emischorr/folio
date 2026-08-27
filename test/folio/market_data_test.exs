@@ -83,7 +83,29 @@ defmodule Folio.MarketDataTest do
       refute_enqueued worker: BackfillAssetPrices
 
       assert :ok = MarketData.ensure_history(asset.id, ~D[2024-06-01], "EUR")
-      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id, from: "2024-06-01"}
+      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id}
+    end
+
+    test "a repeated enqueue collapses without dropping the wider window" do
+      asset = crypto_asset_fixture()
+
+      assert :ok = MarketData.ensure_history(asset.id, ~D[2025-06-01], "EUR")
+      assert :ok = MarketData.ensure_history(asset.id, ~D[2020-01-01], "EUR")
+
+      # The window lives on the asset, not in the args, so one job serves both.
+      assert [_only_one] = all_enqueued(worker: BackfillAssetPrices)
+    end
+  end
+
+  describe "force_backfill/1" do
+    test "enqueues even when a job for the asset is already pending" do
+      asset = crypto_asset_fixture()
+
+      assert :ok = MarketData.ensure_history(asset.id, ~D[2020-01-01], "EUR")
+      assert {:ok, job} = MarketData.force_backfill(asset.id)
+
+      refute job.conflict?
+      assert job.args == %{asset_id: asset.id}
     end
   end
 

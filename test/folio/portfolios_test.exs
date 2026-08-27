@@ -61,7 +61,7 @@ defmodule Folio.PortfoliosTest do
           price_per_unit: "10"
         })
 
-      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id, from: "2025-06-01"}
+      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id}
       assert_enqueued worker: BackfillFxRates, args: %{currency: "USD", from: "2025-06-01"}
     end
 
@@ -198,7 +198,11 @@ defmodule Folio.PortfoliosTest do
                })
 
       assert Decimal.eq?(updated.quantity, "3")
-      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id, from: "2025-02-01"}
+      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id}
+
+      # The moved-back date is picked up from the transaction at execution time,
+      # not from the job args.
+      assert Portfolios.earliest_transaction_date(asset.id) == ~D[2025-02-01]
     end
 
     test "update_transaction/2 returns the changeset on invalid input" do

@@ -128,6 +128,21 @@ defmodule Folio.Portfolios do
     Repo.all(from t in Transaction, distinct: true, select: t.currency)
   end
 
+  @doc "The earliest execution date across all transactions for an asset, or nil."
+  @spec earliest_transaction_date(pos_integer()) :: Date.t() | nil
+  def earliest_transaction_date(asset_id) do
+    earliest =
+      Repo.one(
+        from t in Transaction,
+          where: t.asset_id == ^asset_id,
+          order_by: [asc: t.executed_at],
+          limit: 1,
+          select: t.executed_at
+      )
+
+    if earliest, do: DateTime.to_date(earliest)
+  end
+
   defp get_asset(nil), do: nil
   defp get_asset(asset_id), do: Assets.get_asset(asset_id)
 

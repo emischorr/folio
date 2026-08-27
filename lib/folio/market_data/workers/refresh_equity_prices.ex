@@ -6,19 +6,23 @@ defmodule Folio.MarketData.Workers.RefreshEquityPrices do
   One failed symbol does not fail the others.
   """
 
-  use Oban.Worker, queue: :market_data, max_attempts: 3
+  @max_attempts 3
+  @snooze_limit 3
+
+  use Oban.Worker, queue: :market_data, max_attempts: @max_attempts
 
   require Logger
 
   alias Folio.Assets
   alias Folio.MarketData
+  alias Folio.MarketData.Backoff
 
   @impl true
-  def perform(%Oban.Job{args: args}) do
+  def perform(%Oban.Job{args: args} = job) do
     now = args_now(args)
 
     if trading_hours?(now) do
-      refresh(Assets.list_assets_by_source(:yahoo), now)
+      refresh(Assets.list_assets_by_source(:yahoo), now, job)
     else
       :ok
     end
@@ -30,13 +34,13 @@ defmodule Folio.MarketData.Workers.RefreshEquityPrices do
     Date.day_of_week(DateTime.to_date(now)) in 1..5 and now.hour >= 6 and now.hour < 22
   end
 
-  defp refresh([], _now), do: :ok
+  defp refresh([], _now, _job), do: :ok
 
-  defp refresh(assets, now) do
+  defp refresh(assets, now, job) do
     results = for asset <- assets, do: refresh_asset(asset, now)
 
     cond do
-      :rate_limited in results -> {:snooze, 120}
+      :rate_limited in results -> Backoff.snooze_or_cancel(job, @max_attempts, @snooze_limit)
       Enum.all?(results, &(&1 != :ok)) -> {:error, :all_sources_failed}
       true -> :ok
     end

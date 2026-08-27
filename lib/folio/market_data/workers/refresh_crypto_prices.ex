@@ -5,24 +5,28 @@ defmodule Folio.MarketData.Workers.RefreshCryptoPrices do
   currency group does not fail the others.
   """
 
-  use Oban.Worker, queue: :market_data, max_attempts: 3
+  @max_attempts 3
+  @snooze_limit 3
+
+  use Oban.Worker, queue: :market_data, max_attempts: @max_attempts
 
   require Logger
 
   alias Folio.Assets
   alias Folio.MarketData
+  alias Folio.MarketData.Backoff
 
   @impl true
-  def perform(%Oban.Job{}) do
+  def perform(%Oban.Job{} = job) do
     assets = Assets.list_assets_by_source(:coingecko)
 
     case assets do
       [] -> :ok
-      assets -> refresh_groups(Enum.group_by(assets, & &1.quote_currency))
+      assets -> refresh_groups(Enum.group_by(assets, & &1.quote_currency), job)
     end
   end
 
-  defp refresh_groups(groups) do
+  defp refresh_groups(groups, job) do
     now = DateTime.utc_now()
 
     results =
@@ -31,7 +35,7 @@ defmodule Folio.MarketData.Workers.RefreshCryptoPrices do
       end
 
     cond do
-      :rate_limited in results -> {:snooze, 120}
+      :rate_limited in results -> Backoff.snooze_or_cancel(job, @max_attempts, @snooze_limit)
       Enum.all?(results, &(&1 != :ok)) -> {:error, :all_sources_failed}
       true -> :ok
     end

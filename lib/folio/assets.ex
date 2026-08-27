@@ -17,6 +17,10 @@ defmodule Folio.Assets do
   @initial_history_days 30
   @search_limit 20
 
+  @doc "Days of price history fetched when an asset is first created."
+  @spec initial_history_days() :: pos_integer()
+  def initial_history_days, do: @initial_history_days
+
   @doc "Fetches an asset by id, raising if absent."
   @spec get_asset!(pos_integer()) :: Asset.t()
   def get_asset!(id), do: Repo.get!(Asset, id)

@@ -166,17 +166,14 @@ defmodule Folio.MarketData do
   @doc """
   Enqueues backfill jobs so daily prices for the asset and FX rates for its
   quote currency reach back to `from_date`. No-op when history already covers
-  it. Duplicate enqueues are absorbed by unique jobs.
+  it. Duplicate enqueues are absorbed by unique jobs; the price backfill
+  derives its own window at execution time, so an absorbed enqueue still
+  widens the range rather than dropping it.
   """
   @spec ensure_history(pos_integer(), Date.t(), String.t()) :: :ok
   def ensure_history(asset_id, from_date, quote_currency) do
-    if covered?(earliest_daily_price_date(asset_id), from_date) do
-      :ok
-    else
-      {:ok, _job} =
-        Oban.insert(
-          BackfillAssetPrices.new(%{asset_id: asset_id, from: Date.to_iso8601(from_date)})
-        )
+    unless covered?(earliest_daily_price_date(asset_id), from_date) do
+      {:ok, _job} = Oban.insert(BackfillAssetPrices.new(%{asset_id: asset_id}))
     end
 
     ensure_fx_history(quote_currency, from_date)
@@ -193,6 +190,21 @@ defmodule Folio.MarketData do
     end
 
     :ok
+  end
+
+  @doc """
+  Cancels any live price backfill for the asset and enqueues a fresh one,
+  bypassing both the coverage check and job uniqueness. The operator escape
+  hatch for a backfill that failed or is backing off - call it from
+  `bin/folio remote`.
+  """
+  @spec force_backfill(pos_integer()) :: {:ok, Oban.Job.t()} | {:error, term()}
+  def force_backfill(asset_id) do
+    [worker: BackfillAssetPrices, args: %{asset_id: asset_id}]
+    |> Oban.Job.query()
+    |> Oban.cancel_all_jobs()
+
+    Oban.insert(BackfillAssetPrices.new(%{asset_id: asset_id}))
   end
 
   @doc """
