@@ -862,7 +862,11 @@ defmodule FolioWeb.DashboardLive do
 
   defp apply_action(socket, :asset, %{"asset_id" => asset_id}) do
     asset = Assets.get_asset!(String.to_integer(asset_id))
-    transactions = Portfolios.list_transactions(socket.assigns.portfolio_id, asset_id: asset.id)
+
+    transactions =
+      socket.assigns.portfolio_id
+      |> Portfolios.list_transactions(asset_id: asset.id)
+      |> Enum.reverse()
 
     assign(socket, asset: asset, transactions: transactions)
   end
