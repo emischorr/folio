@@ -26,6 +26,11 @@ port = String.to_integer(System.get_env("PORT") || System.get_env("PREVIEW_PORT"
 
 config :folio, FolioWeb.Endpoint, http: [port: port]
 
+# Display format for dates/times throughout the app and the chart's time
+# axis: "24h" for "13:30", "12h" for "1:30 PM". Defaults to 24h.
+time_format = if System.get_env("TIME_FORMAT") == "12h", do: :"12h", else: :"24h"
+config :folio, :dashboard, time_format: time_format
+
 # Optional CoinGecko demo API key: raises the public rate limit from ~5-15
 # to 100 requests/minute. See README "Data sources".
 config :folio, :coingecko_api_key, System.get_env("COINGECKO_API_KEY")

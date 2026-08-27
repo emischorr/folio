@@ -38,6 +38,15 @@ defmodule FolioWeb.Format do
     |> Decimal.to_string(:normal)
   end
 
+  @doc ~S"""
+  Date and time per the operator's time-format setting:
+  `datetime(dt, :"24h")` returns "26 Aug 2026 · 13:30", `datetime(dt, :"12h")`
+  returns "26 Aug 2026 · 1:30 PM".
+  """
+  @spec datetime(DateTime.t(), :"24h" | :"12h") :: String.t()
+  def datetime(%DateTime{} = dt, :"12h"), do: Calendar.strftime(dt, "%d %b %Y · %-I:%M %p")
+  def datetime(%DateTime{} = dt, :"24h"), do: Calendar.strftime(dt, "%d %b %Y · %H:%M")
+
   @doc ~S{Currency symbol: "EUR" returns "€", "USD" returns "$", otherwise the code itself.}
   @spec currency_symbol(String.t()) :: String.t()
   def currency_symbol("EUR"), do: "€"

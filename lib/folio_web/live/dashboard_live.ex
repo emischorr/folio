@@ -35,6 +35,7 @@ defmodule FolioWeb.DashboardLive do
        window: Keyword.get(dashboard, :window, :"1w"),
        mode: Keyword.get(dashboard, :mode, :value),
        currency: Keyword.get(dashboard, :currency, "EUR"),
+       time_format: Keyword.get(dashboard, :time_format, :"24h"),
        portfolio_id: portfolio.id
      )
      |> stream_configure(:holdings, dom_id: &"asset-#{&1.asset_id}")
@@ -260,6 +261,7 @@ defmodule FolioWeb.DashboardLive do
                   id="portfolio-chart"
                   phx-hook="PortfolioChart"
                   phx-update="ignore"
+                  data-time-format={@time_format}
                   class="mt-4 h-40 w-full lg:h-[220px]"
                 >
                 </div>
@@ -420,7 +422,7 @@ defmodule FolioWeb.DashboardLive do
                   </span>
                 </div>
                 <div class="mt-0.5 text-[13px] text-base-content/50 tabular-nums">
-                  {Calendar.strftime(transaction.executed_at, "%d %b %Y · %H:%M")}
+                  {datetime(transaction.executed_at, @time_format)}
                   <span :if={not Decimal.eq?(transaction.fee, 0)}>
                     &middot; fee {money(transaction.fee, transaction.currency)}
                   </span>
