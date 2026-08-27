@@ -122,6 +122,60 @@ defmodule Folio.Analytics.EngineTest do
     end
   end
 
+  describe "open_lots" do
+    test "a partial sell consumes the oldest lot first" do
+      lots =
+        Engine.open_lots([
+          buy(1, ~U[2025-01-06 10:00:00Z], "2", "100"),
+          buy(1, ~U[2025-01-08 10:00:00Z], "1", "130"),
+          sell(1, ~U[2025-01-09 10:00:00Z], "1", "140")
+        ])
+
+      assert [%{quantity: q1, price_per_unit: p1}, %{quantity: q2, price_per_unit: p2}] = lots
+      assert_decimal(q1, "1")
+      assert_decimal(p1, "100")
+      assert_decimal(q2, "1")
+      assert_decimal(p2, "130")
+    end
+
+    test "a sell exactly draining a lot removes it and leaves later lots untouched" do
+      lots =
+        Engine.open_lots([
+          buy(1, ~U[2025-01-06 10:00:00Z], "2", "100"),
+          sell(1, ~U[2025-01-07 10:00:00Z], "2", "120"),
+          buy(1, ~U[2025-01-08 10:00:00Z], "1", "130")
+        ])
+
+      assert [%{quantity: quantity, price_per_unit: price}] = lots
+      assert_decimal(quantity, "1")
+      assert_decimal(price, "130")
+    end
+
+    test "a sell spanning multiple lots consumes across them in order" do
+      lots =
+        Engine.open_lots([
+          buy(1, ~U[2025-01-06 10:00:00Z], "1", "100"),
+          buy(1, ~U[2025-01-07 10:00:00Z], "1", "110"),
+          buy(1, ~U[2025-01-08 10:00:00Z], "1", "120"),
+          sell(1, ~U[2025-01-09 10:00:00Z], "2", "130")
+        ])
+
+      assert [%{quantity: quantity, price_per_unit: price}] = lots
+      assert_decimal(quantity, "1")
+      assert_decimal(price, "120")
+    end
+
+    test "a full sell leaves no open lots" do
+      lots =
+        Engine.open_lots([
+          buy(1, ~U[2025-01-06 10:00:00Z], "2", "100"),
+          sell(1, ~U[2025-01-07 10:00:00Z], "2", "120")
+        ])
+
+      assert lots == []
+    end
+  end
+
   describe "cost basis and window change" do
     test "fees are part of invested capital" do
       dataset = eur_dataset([buy(1, ~U[2025-01-06 10:00:00Z], "2", "100", fee: "1")])

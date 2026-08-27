@@ -85,7 +85,11 @@ defmodule FolioWeb.DashboardLive do
   def handle_event("select_asset_currency", %{"currency" => currency}, socket) do
     currency = if currency == "USD", do: "USD", else: "EUR"
 
-    {:noreply, socket |> assign(asset_currency: currency) |> push_asset_chart_data()}
+    {:noreply,
+     socket
+     |> assign(asset_currency: currency)
+     |> assign_asset_position()
+     |> push_asset_chart_data()}
   end
 
   def handle_event("search_asset", %{"query" => query}, socket) do
@@ -566,6 +570,51 @@ defmodule FolioWeb.DashboardLive do
                     {mode |> Atom.to_string() |> String.capitalize()}
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+          <div :if={@asset_position} id="asset-position" class="mt-4 grid grid-cols-2 gap-2.5 px-4">
+            <div id="asset-position-value" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
+              <div class="text-[13px] font-medium text-base-content/50">Value</div>
+              <div class="mt-0.5 text-[15px] font-semibold tabular-nums">
+                {money(@asset_position.value_now, @asset_currency)}
+              </div>
+              <div class="text-[12px] text-base-content/40 tabular-nums">
+                vs {money(@asset_position.value_buy, @asset_currency)} at buy
+              </div>
+            </div>
+            <div id="asset-position-price" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
+              <div class="text-[13px] font-medium text-base-content/50">Price per unit</div>
+              <div class="mt-0.5 text-[15px] font-semibold tabular-nums">
+                {money(@asset_position.price_now, @asset_currency)}
+              </div>
+              <div class="text-[12px] text-base-content/40 tabular-nums">
+                vs {money(@asset_position.price_buy, @asset_currency)} at buy
+              </div>
+            </div>
+            <div id="asset-position-profit" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
+              <div class="text-[13px] font-medium text-base-content/50">Profit</div>
+              <div class={[
+                "mt-0.5 text-[15px] font-semibold tabular-nums",
+                change_class(@asset_position.profit_abs)
+              ]}>
+                {change_arrow(@asset_position.profit_abs)} {money_abs(
+                  @asset_position.profit_abs,
+                  @asset_currency
+                )}
+              </div>
+            </div>
+            <div id="asset-position-return" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
+              <div class="text-[13px] font-medium text-base-content/50">Return</div>
+              <div class={[
+                "mt-0.5 text-[15px] font-semibold tabular-nums",
+                change_class(@asset_position.profit_abs)
+              ]}>
+                <%= if @asset_position.profit_pct do %>
+                  {change_arrow(@asset_position.profit_abs)} {percent(@asset_position.profit_pct)}
+                <% else %>
+                  &mdash;
+                <% end %>
               </div>
             </div>
           </div>
@@ -1060,6 +1109,7 @@ defmodule FolioWeb.DashboardLive do
       asset_currency: socket.assigns.currency,
       show_asset_chart?: not Asset.unresolved?(asset) and not is_nil(latest)
     )
+    |> assign_asset_position()
     |> maybe_push_asset_chart_data()
   end
 
@@ -1113,6 +1163,15 @@ defmodule FolioWeb.DashboardLive do
       mode: Atom.to_string(mode),
       currency: currency
     })
+  end
+
+  defp assign_asset_position(socket) do
+    %{portfolio_id: portfolio_id, asset: asset, asset_currency: currency} = socket.assigns
+
+    assign(socket,
+      asset_position:
+        Analytics.asset_position(portfolio_id, asset.id, asset.quote_currency, currency)
+    )
   end
 
   defp maybe_push_asset_chart_data(%{assigns: %{show_asset_chart?: true}} = socket),

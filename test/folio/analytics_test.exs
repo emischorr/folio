@@ -140,6 +140,98 @@ defmodule Folio.AnalyticsTest do
     assert Decimal.eq?(value, "0")
   end
 
+  test "asset_position compares current value/price to the FIFO buy lots" do
+    %{portfolio: portfolio, bitcoin: bitcoin, stock: stock} = seeded_portfolio()
+
+    btc_position = Analytics.asset_position(portfolio.id, bitcoin.id, "EUR", "EUR", now: @now)
+    assert Decimal.eq?(btc_position.quantity, "2")
+    assert Decimal.eq?(btc_position.value_now, "280")
+    assert Decimal.eq?(btc_position.value_buy, "200")
+    assert Decimal.eq?(btc_position.price_now, "140")
+    assert Decimal.eq?(btc_position.price_buy, "100")
+    assert Decimal.eq?(btc_position.profit_abs, "80")
+    assert Decimal.eq?(btc_position.profit_pct, "40")
+
+    # NVDA: 5 @ 50 USD bought, flat at 50 USD now -> no profit, but the
+    # display currency still converts both legs at the same (flat) FX rate.
+    stock_position = Analytics.asset_position(portfolio.id, stock.id, "USD", "EUR", now: @now)
+    assert Decimal.eq?(stock_position.value_now, "200")
+    assert Decimal.eq?(stock_position.value_buy, "200")
+    assert Decimal.eq?(stock_position.profit_abs, "0")
+    assert Decimal.eq?(stock_position.profit_pct, "0")
+  end
+
+  test "asset_position carries the remaining lot's own buy price after a partial sell" do
+    portfolio = portfolio_fixture()
+    bitcoin = crypto_asset_fixture()
+    seed_daily_prices(bitcoin.id, ~D[2025-01-06], ~D[2025-01-10], "100", "10")
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      executed_at: ~U[2025-01-06 10:00:00Z],
+      quantity: "2",
+      price_per_unit: "100"
+    })
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      executed_at: ~U[2025-01-08 10:00:00Z],
+      quantity: "1",
+      price_per_unit: "130"
+    })
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      type: :sell,
+      executed_at: ~U[2025-01-09 10:00:00Z],
+      quantity: "2",
+      price_per_unit: "135"
+    })
+
+    position = Analytics.asset_position(portfolio.id, bitcoin.id, "EUR", "EUR", now: @now)
+
+    # The sell drains the whole first lot (2 @ 100) then leaves the second
+    # lot (1 @ 130) untouched, so the average buy price stays 130, not the
+    # blended 110.
+    assert Decimal.eq?(position.quantity, "1")
+    assert Decimal.eq?(position.price_buy, "130")
+    assert Decimal.eq?(position.value_buy, "130")
+    assert Decimal.eq?(position.price_now, "140")
+  end
+
+  test "asset_position is nil once the position is fully sold" do
+    %{portfolio: portfolio, bitcoin: bitcoin} = seeded_portfolio()
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      type: :sell,
+      executed_at: ~U[2025-01-09 10:00:00Z],
+      quantity: "2",
+      price_per_unit: "130"
+    })
+
+    assert Analytics.asset_position(portfolio.id, bitcoin.id, "EUR", "EUR", now: @now) == nil
+  end
+
+  test "asset_position is nil when there is no current price" do
+    portfolio = portfolio_fixture()
+    bitcoin = crypto_asset_fixture()
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      executed_at: ~U[2025-01-06 10:00:00Z],
+      quantity: "2",
+      price_per_unit: "100"
+    })
+
+    assert Analytics.asset_position(portfolio.id, bitcoin.id, "EUR", "EUR", now: @now) == nil
+  end
+
   test "convert translates via stored FX rates and passes same-currency through" do
     seed_fx_rates("USD", ~D[2025-01-06], ~D[2025-01-10], "1.25", "0")
 
