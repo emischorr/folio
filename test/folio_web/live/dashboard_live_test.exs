@@ -142,6 +142,124 @@ defmodule FolioWeb.DashboardLiveTest do
       assert has_element?(view, "#transaction-#{transaction.id}")
       assert view |> element("#asset-transactions") |> render() =~ "BUY"
     end
+
+    test "asset page shows the chart and pushes asset-scoped series", %{
+      conn: conn,
+      bitcoin: bitcoin
+    } do
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert_push_event(view, "chart:data", %{points: _initial})
+
+      view |> element("#asset-#{bitcoin.id}") |> render_click()
+      assert_patch(view, ~p"/assets/#{bitcoin.id}")
+
+      assert has_element?(view, "#asset-chart")
+      assert has_element?(view, "#asset-window-1w[class*='bg-base-100']")
+      assert has_element?(view, "#asset-mode-value[class*='bg-base-100']")
+      assert has_element?(view, "#asset-currency-EUR[class*='bg-base-100']")
+
+      assert_push_event(view, "chart:data", %{points: points, mode: "value"})
+      assert points != []
+    end
+
+    test "selecting an asset window re-pushes the asset series", %{
+      conn: conn,
+      bitcoin: bitcoin
+    } do
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert_push_event(view, "chart:data", %{points: _initial})
+
+      view |> element("#asset-#{bitcoin.id}") |> render_click()
+      assert_patch(view, ~p"/assets/#{bitcoin.id}")
+      assert_push_event(view, "chart:data", %{points: _asset_initial})
+
+      view |> element("#asset-window-1m") |> render_click()
+
+      assert has_element?(view, "#asset-window-1m[class*='bg-base-100']")
+      assert_push_event(view, "chart:data", %{points: points, mode: "value"})
+      assert points != []
+    end
+
+    test "toggling asset mode pushes the profit series", %{conn: conn, bitcoin: bitcoin} do
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert_push_event(view, "chart:data", %{points: _initial})
+
+      view |> element("#asset-#{bitcoin.id}") |> render_click()
+      assert_patch(view, ~p"/assets/#{bitcoin.id}")
+      assert_push_event(view, "chart:data", %{points: _asset_initial})
+
+      view |> element("#asset-mode-profit") |> render_click()
+
+      assert has_element?(view, "#asset-mode-profit[class*='bg-base-100']")
+      assert_push_event(view, "chart:data", %{points: points, mode: "profit"})
+      assert points != []
+    end
+
+    test "switching the asset chart currency re-pushes the converted series", %{
+      conn: conn,
+      bitcoin: bitcoin
+    } do
+      seed_fx_rates("USD", Date.add(Date.utc_today(), -40), Date.utc_today(), "1.25", "0")
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert_push_event(view, "chart:data", %{points: _initial})
+
+      view |> element("#asset-#{bitcoin.id}") |> render_click()
+      assert_patch(view, ~p"/assets/#{bitcoin.id}")
+      assert_push_event(view, "chart:data", %{points: _asset_initial})
+
+      view |> element("#asset-currency-USD") |> render_click()
+
+      assert has_element?(view, "#asset-currency-USD[class*='bg-base-100']")
+      assert_push_event(view, "chart:data", %{points: points, currency: "USD"})
+      assert points != []
+    end
+  end
+
+  describe "asset chart visibility" do
+    test "hides the chart for an unresolved asset even with stored prices", %{
+      conn: conn,
+      portfolio: portfolio
+    } do
+      today = Date.utc_today()
+      unresolved = stock_asset_fixture(%{isin: nil, name: "Pending Co", ticker: "PEND"})
+      seed_daily_prices(unresolved.id, Date.add(today, -10), today, "20", "1")
+
+      transaction_fixture(%{
+        portfolio_id: portfolio.id,
+        asset_id: unresolved.id,
+        executed_at: DateTime.new!(Date.add(today, -5), ~T[10:00:00], "Etc/UTC"),
+        quantity: "1",
+        price_per_unit: "20",
+        currency: "USD"
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/assets/#{unresolved.id}")
+
+      assert has_element?(view, "#asset-unresolved")
+      refute has_element?(view, "#asset-chart")
+    end
+
+    test "hides the chart when the asset has no stored price data", %{
+      conn: conn,
+      portfolio: portfolio
+    } do
+      today = Date.utc_today()
+      pending = stock_asset_fixture(%{name: "Newly Added", ticker: "NEW"})
+
+      transaction_fixture(%{
+        portfolio_id: portfolio.id,
+        asset_id: pending.id,
+        executed_at: DateTime.new!(Date.add(today, -3), ~T[10:00:00], "Etc/UTC"),
+        quantity: "1",
+        price_per_unit: "10",
+        currency: "USD"
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/assets/#{pending.id}")
+
+      refute has_element?(view, "#asset-unresolved")
+      refute has_element?(view, "#asset-chart")
+    end
   end
 
   describe "without transactions" do
