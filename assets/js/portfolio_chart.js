@@ -2,7 +2,9 @@
 // lightweight-charts (vendored, Apache-2.0). The LiveView pushes
 // "chart:data" events with {points: [{time, value}], mode, currency};
 // colors follow the active daisyUI theme by resolving its CSS tokens at
-// runtime.
+// runtime. The operator's time-format setting ("24h"/"12h") arrives once via
+// the root element's data-time-format attribute, since it never changes
+// while the server is running.
 import {
   createChart,
   AreaSeries,
@@ -63,19 +65,25 @@ function isIntraday(points) {
   return points[1].time - points[0].time < 20 * 60 * 60
 }
 
-function formatTooltipDate(unixSeconds, intraday) {
+function formatTooltipDate(unixSeconds, intraday, hour12) {
   const date = new Date(unixSeconds * 1000)
   return intraday
-    ? date.toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})
+    ? date.toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12,
+      })
     : date.toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric"})
 }
 
 // Compact form for the time-axis tick marks themselves (the tooltip above
 // carries the full date, so ticks just need to be scannable).
-function formatAxisDate(unixSeconds, intraday) {
+function formatAxisDate(unixSeconds, intraday, hour12) {
   const date = new Date(unixSeconds * 1000)
   return intraday
-    ? date.toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"})
+    ? date.toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit", hour12})
     : date.toLocaleDateString("en-US", {month: "short", day: "numeric"})
 }
 
@@ -85,6 +93,7 @@ const PortfolioChart = {
     this.currency = "EUR"
     this.mode = "value"
     this.intraday = false
+    this.hour12 = this.el.dataset.timeFormat === "12h"
 
     this.chart = createChart(this.el, {
       autoSize: true,
@@ -107,7 +116,7 @@ const PortfolioChart = {
       timeScale: {
         visible: true,
         borderVisible: false,
-        tickMarkFormatter: (time) => formatAxisDate(time, this.intraday),
+        tickMarkFormatter: (time) => formatAxisDate(time, this.intraday, this.hour12),
       },
       handleScroll: false,
       handleScale: false,
@@ -216,7 +225,7 @@ const PortfolioChart = {
       this.mode === "profit" ? (price < 0 ? "text-error" : "text-success") : ""
 
     this.tooltip.innerHTML = `
-      <div class="text-base-content/50">${formatTooltipDate(param.time, this.intraday)}</div>
+      <div class="text-base-content/50">${formatTooltipDate(param.time, this.intraday, this.hour12)}</div>
       <div class="font-semibold tabular-nums ${changeClass}">${formatMoney(price, this.currency)}</div>
     `
     this.tooltip.classList.remove("hidden")

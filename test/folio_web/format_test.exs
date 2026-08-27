@@ -28,4 +28,18 @@ defmodule FolioWeb.FormatTest do
     assert Format.quantity(Decimal.new("78.50")) == "78.5"
     assert Format.quantity(Decimal.new("0.123456789")) == "0.12345679"
   end
+
+  test "datetime renders 24h or 12h am/pm depending on the setting" do
+    dt = ~U[2026-08-26 13:30:00Z]
+
+    assert Format.datetime(dt, :"24h") == "26 Aug 2026 · 13:30"
+    assert Format.datetime(dt, :"12h") == "26 Aug 2026 · 1:30 PM"
+  end
+
+  test "datetime pads minutes but not the 12h hour" do
+    dt = ~U[2026-08-26 09:05:00Z]
+
+    assert Format.datetime(dt, :"24h") == "26 Aug 2026 · 09:05"
+    assert Format.datetime(dt, :"12h") == "26 Aug 2026 · 9:05 AM"
+  end
 end
