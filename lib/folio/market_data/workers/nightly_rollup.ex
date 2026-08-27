@@ -5,14 +5,18 @@ defmodule Folio.MarketData.Workers.NightlyRollup do
   FX rates for all currencies in use. Fully idempotent, so retries are safe.
   """
 
-  use Oban.Worker, queue: :market_data, max_attempts: 3
+  @max_attempts 3
+  @snooze_limit 3
+
+  use Oban.Worker, queue: :market_data, max_attempts: @max_attempts
 
   alias Folio.Assets
   alias Folio.MarketData
+  alias Folio.MarketData.Backoff
   alias Folio.Portfolios
 
   @impl true
-  def perform(%Oban.Job{args: args}) do
+  def perform(%Oban.Job{args: args} = job) do
     # Optional "today" arg supports manual reruns and deterministic tests.
     today = args_today(args)
 
@@ -27,10 +31,10 @@ defmodule Folio.MarketData.Workers.NightlyRollup do
 
     MarketData.prune_intraday(cutoff)
 
-    refresh_fx()
+    refresh_fx(job)
   end
 
-  defp refresh_fx do
+  defp refresh_fx(job) do
     currencies =
       (Assets.quote_currencies() ++ Portfolios.transaction_currencies())
       |> Enum.uniq()
@@ -38,12 +42,12 @@ defmodule Folio.MarketData.Workers.NightlyRollup do
 
     case currencies do
       [] -> :ok
-      currencies -> fetch_and_store_rates(currencies)
+      currencies -> fetch_and_store_rates(currencies, job)
     end
   end
 
-  defp fetch_and_store_rates(currencies) do
-    case fx_client().latest_rates(currencies) do
+  defp fetch_and_store_rates(currencies, job) do
+    case MarketData.fetch_latest_rates(currencies) do
       {:ok, %{date: date, rates: rates}} ->
         Enum.each(rates, fn {currency, rate} ->
           :ok = MarketData.upsert_fx_rates(currency, [%{date: date, rate: rate}])
@@ -52,7 +56,7 @@ defmodule Folio.MarketData.Workers.NightlyRollup do
         :ok
 
       {:error, :rate_limited} ->
-        {:snooze, 300}
+        Backoff.snooze_or_cancel(job, @max_attempts, @snooze_limit)
 
       {:error, reason} ->
         {:error, reason}
@@ -61,6 +65,4 @@ defmodule Folio.MarketData.Workers.NightlyRollup do
 
   defp args_today(%{"today" => iso}), do: Date.from_iso8601!(iso)
   defp args_today(_args), do: Date.utc_today()
-
-  defp fx_client, do: Application.get_env(:folio, :clients)[:fx]
 end

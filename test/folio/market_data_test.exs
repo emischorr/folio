@@ -83,7 +83,29 @@ defmodule Folio.MarketDataTest do
       refute_enqueued worker: BackfillAssetPrices
 
       assert :ok = MarketData.ensure_history(asset.id, ~D[2024-06-01], "EUR")
-      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id, from: "2024-06-01"}
+      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id}
+    end
+
+    test "a repeated enqueue collapses without dropping the wider window" do
+      asset = crypto_asset_fixture()
+
+      assert :ok = MarketData.ensure_history(asset.id, ~D[2025-06-01], "EUR")
+      assert :ok = MarketData.ensure_history(asset.id, ~D[2020-01-01], "EUR")
+
+      # The window lives on the asset, not in the args, so one job serves both.
+      assert [_only_one] = all_enqueued(worker: BackfillAssetPrices)
+    end
+  end
+
+  describe "force_backfill/1" do
+    test "enqueues even when a job for the asset is already pending" do
+      asset = crypto_asset_fixture()
+
+      assert :ok = MarketData.ensure_history(asset.id, ~D[2020-01-01], "EUR")
+      assert {:ok, job} = MarketData.force_backfill(asset.id)
+
+      refute job.conflict?
+      assert job.args == %{asset_id: asset.id}
     end
   end
 
@@ -123,6 +145,38 @@ defmodule Folio.MarketDataTest do
 
       assert MarketData.prune_intraday(~U[2025-01-08 00:00:00Z]) == 1
       assert [%{at: ~U[2025-01-09 00:00:00Z]}] = MarketData.intraday_prices(asset.id)
+    end
+  end
+
+  describe "latest_prices/1" do
+    test "one batch answer per asset, newest of tick vs close" do
+      import Folio.AssetsFixtures
+
+      tick_asset = crypto_asset_fixture()
+      close_asset = stock_asset_fixture()
+      empty_asset = etf_asset_fixture()
+
+      :ok =
+        MarketData.upsert_daily_prices(tick_asset.id, [
+          %{date: ~D[2026-08-25], price: Decimal.new("100")}
+        ])
+
+      :ok =
+        MarketData.upsert_intraday_prices(tick_asset.id, [
+          %{at: ~U[2026-08-25 14:00:00Z], price: Decimal.new("101")}
+        ])
+
+      :ok =
+        MarketData.upsert_daily_prices(close_asset.id, [
+          %{date: ~D[2026-08-24], price: Decimal.new("50")}
+        ])
+
+      prices = MarketData.latest_prices([tick_asset.id, close_asset.id, empty_asset.id])
+
+      assert %{at: ~U[2026-08-25 14:00:00Z], price: tick_price} = prices[tick_asset.id]
+      assert Decimal.eq?(tick_price, "101")
+      assert %{at: ~U[2026-08-24 00:00:00Z]} = prices[close_asset.id]
+      refute Map.has_key?(prices, empty_asset.id)
     end
   end
 end

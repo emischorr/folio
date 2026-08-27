@@ -7,6 +7,10 @@
 # General application configuration
 import Config
 
+# Market timezones (Folio.MarketData.Markets). :tz ships the IANA table and never
+# touches the network; updates arrive with the dependency, which is fine for trading hours.
+config :elixir, :time_zone_database, Tz.TimeZoneDatabase
+
 config :folio,
   ecto_repos: [Folio.Repo],
   generators: [timestamp_type: :utc_datetime]
@@ -32,20 +36,52 @@ config :folio, Oban,
     {Oban.Plugins.Cron,
      crontab: [
        {"*/15 * * * *", Folio.MarketData.Workers.RefreshCryptoPrices},
-       {"*/30 * * * *", Folio.MarketData.Workers.RefreshEquityPrices},
+       {"*/30 * * * *", Folio.MarketData.Workers.RefreshSecurityPrices},
        {"15 0 * * *", Folio.MarketData.Workers.NightlyRollup}
      ]}
   ]
 
-# Market data provider implementations (behaviour-backed, swappable per source)
-config :folio, :clients,
-  crypto: Folio.Clients.CoinGecko,
-  equity: Folio.Clients.Yahoo,
-  fx: Folio.Clients.Frankfurter,
-  security_id: Folio.Clients.OpenFigi
+# Source chains per concern, tried in order; first success wins. Adding or
+# reordering a source is config, not code. See Folio.MarketData.Chain.
+config :folio, :market_data_sources,
+  security: [
+    lookup: [Folio.MarketData.Sources.OpenFigi, Folio.MarketData.Sources.Yahoo],
+    history: [Folio.MarketData.Sources.Yahoo],
+    quote: [
+      Folio.MarketData.Sources.Tradegate,
+      Folio.MarketData.Sources.BoerseFrankfurt,
+      Folio.MarketData.Sources.Yahoo
+    ]
+  ],
+  crypto: [
+    lookup: [Folio.MarketData.Sources.CoinGecko],
+    history: [Folio.MarketData.Sources.CoinGecko],
+    quote: [Folio.MarketData.Sources.CoinGecko]
+  ],
+  fx: Folio.MarketData.Sources.Frankfurter
 
-# Asset-resolution lookup cache. Yahoo search is rate-limited per IP, so hits are
-# held for minutes and 429s are remembered briefly. See README "Data sources".
+# Per-source knobs. Overrides pin the rare listing whose vendor naming breaks
+# the rule; they live in source config, never on assets.
+config :folio, Folio.MarketData.Sources.CoinGecko,
+  id_overrides: %{"BTC" => "bitcoin", "ETH" => "ethereum"},
+  id_ttl_ms: :timer.hours(24)
+
+config :folio, Folio.MarketData.Sources.Yahoo, symbol_overrides: %{}
+
+# Per-source request budgets (token buckets, Folio.MarketData.RateLimiter).
+# Conservative by design: an empty bucket makes the chain fall through to the
+# next source rather than hammering a free endpoint.
+config :folio, :rate_limits,
+  tradegate: [capacity: 5, per_minute: 60],
+  boerse_frankfurt: [capacity: 5, per_minute: 30],
+  yahoo: [capacity: 3, per_minute: 5],
+  coin_gecko: [capacity: 5, per_minute: 10],
+  open_figi: [capacity: 10, per_minute: 25],
+  frankfurter: [capacity: 10, per_minute: 60]
+
+# Market-data lookup cache (Folio.MarketData.Cache TTLs). Free search endpoints
+# are rate-limited per IP, so hits are held for minutes and 429s are remembered
+# briefly. See README "External data sources".
 config :folio, :search_cache, ok_ttl_ms: :timer.minutes(10), error_ttl_ms: :timer.seconds(60)
 
 # Defaults the dashboard UI reads (iteration 2)

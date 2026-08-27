@@ -4,92 +4,124 @@ defmodule Folio.AssetsTest do
   import Folio.AssetsFixtures
 
   alias Folio.Assets
+  alias Folio.Assets.Asset
   alias Folio.MarketData.Workers.BackfillAssetPrices
   alias Folio.MarketData.Workers.BackfillFxRates
 
   describe "create_asset/1" do
-    test "stores the source mapping and enqueues an initial backfill" do
+    test "stores vendor-neutral identity and enqueues an initial backfill" do
       attrs = %{
-        symbol: "NVDA",
+        ticker: "NVDA",
         name: "NVIDIA Corporation",
         kind: :stock,
-        exchange: "NasdaqGS",
-        quote_currency: "USD",
-        price_source: :yahoo,
-        source_id: "NVDA"
+        mic: "XNAS",
+        isin: "US67066G1040",
+        quote_currency: "USD"
       }
 
       assert {:ok, asset} = Assets.create_asset(attrs)
-      assert asset.price_source == :yahoo
+      assert asset.ticker == "NVDA"
+      assert asset.mic == "XNAS"
+      assert asset.symbol == nil
 
       assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id}
       assert_enqueued worker: BackfillFxRates, args: %{currency: "USD"}
     end
 
-    test "rejects a duplicate source mapping" do
-      existing = crypto_asset_fixture()
+    test "a security needs its full identity" do
+      assert {:error, changeset} =
+               Assets.create_asset(%{
+                 name: "iShares S&P 500 IT",
+                 kind: :etf,
+                 quote_currency: "EUR"
+               })
+
+      assert %{ticker: [_], mic: [_], isin: [_]} = errors_on(changeset)
+    end
+
+    test "an unknown MIC is rejected" do
+      assert {:error, changeset} =
+               Assets.create_asset(%{
+                 ticker: "QDVE",
+                 name: "iShares S&P 500 IT",
+                 kind: :etf,
+                 mic: "XXXX",
+                 isin: "IE00B3WJKG14",
+                 quote_currency: "EUR"
+               })
+
+      assert %{mic: [_message]} = errors_on(changeset)
+    end
+
+    test "the same ISIN on two venues is two assets; on the same venue it is a duplicate" do
+      isin = unique_isin()
+
+      assert {:ok, _xetra} =
+               Assets.create_asset(%{
+                 ticker: "QDVE",
+                 name: "iShares S&P 500 IT",
+                 kind: :etf,
+                 mic: "XETR",
+                 isin: isin,
+                 quote_currency: "EUR"
+               })
+
+      assert {:ok, _london} =
+               Assets.create_asset(%{
+                 ticker: "IUIT",
+                 name: "iShares S&P 500 IT",
+                 kind: :etf,
+                 mic: "XLON",
+                 isin: isin,
+                 quote_currency: "GBP"
+               })
 
       assert {:error, changeset} =
                Assets.create_asset(%{
-                 symbol: "BTC",
-                 name: "Bitcoin again",
-                 kind: :crypto,
-                 quote_currency: "EUR",
-                 price_source: :coingecko,
-                 source_id: existing.source_id
+                 ticker: "QDVE",
+                 name: "iShares S&P 500 IT again",
+                 kind: :etf,
+                 mic: "XETR",
+                 isin: isin,
+                 quote_currency: "EUR"
                })
 
-      assert %{price_source: [_message]} = errors_on(changeset)
-    end
-  end
-
-  describe "create_manual_asset/1" do
-    test "derives the equity source mapping from the ticker" do
-      attrs = %{
-        symbol: "SAP.DE",
-        name: "SAP SE",
-        kind: :stock,
-        exchange: "XETRA",
-        quote_currency: "EUR"
-      }
-
-      assert {:ok, asset} = Assets.create_manual_asset(attrs)
-      assert asset.price_source == :yahoo
-      assert asset.source_id == "SAP.DE"
+      assert %{isin: [_message]} = errors_on(changeset)
     end
 
-    test "crypto requires an explicit source id" do
-      assert {:error, changeset} =
-               Assets.create_manual_asset(%{
-                 symbol: "ETH",
-                 name: "Ethereum",
+    test "crypto needs only a symbol and rejects a duplicate" do
+      assert {:ok, asset} =
+               Assets.create_asset(%{
+                 symbol: "sol",
+                 name: "Solana",
                  kind: :crypto,
                  quote_currency: "EUR"
                })
 
-      assert %{source_id: [_message]} = errors_on(changeset)
+      assert asset.symbol == "SOL"
 
-      assert {:ok, asset} =
-               Assets.create_manual_asset(%{
-                 symbol: "ETH",
-                 name: "Ethereum",
+      assert {:error, changeset} =
+               Assets.create_asset(%{
+                 symbol: "SOL",
+                 name: "Solana again",
                  kind: :crypto,
-                 quote_currency: "EUR",
-                 source_id: "ethereum"
+                 quote_currency: "EUR"
                })
 
-      assert asset.price_source == :coingecko
+      assert %{symbol: [_message]} = errors_on(changeset)
     end
   end
 
   describe "search_local/1" do
-    test "matches symbol and name case-insensitively" do
-      asset = crypto_asset_fixture()
-      stock_asset_fixture()
+    test "matches ticker, symbol and name case-insensitively" do
+      crypto = crypto_asset_fixture(%{symbol: "BTC"})
+      stock = stock_asset_fixture()
 
       assert [found] = Assets.search_local("bitc")
-      assert found.id == asset.id
+      assert found.id == crypto.id
       assert [_found] = Assets.search_local("btc")
+      assert [found_stock] = Assets.search_local("nvd")
+      assert found_stock.id == stock.id
     end
 
     test "escapes LIKE wildcards" do
@@ -97,47 +129,96 @@ defmodule Folio.AssetsTest do
       assert Assets.search_local("%") == []
     end
 
-    test "matches an exact ISIN or WKN, however it is typed" do
-      asset = etf_asset_fixture(%{isin: "IE00B44Z5B48", wkn: "A1JJTD"})
+    test "matches an exact ISIN, however it is typed" do
+      asset = etf_asset_fixture(%{isin: "IE00B44Z5B48"})
 
       assert [found] = Assets.search_local("IE00B44Z5B48")
       assert found.id == asset.id
       assert [_found] = Assets.search_local("ie00 b44z-5b48")
-      assert [_found] = Assets.search_local("a1jjtd")
     end
   end
 
-  describe "identifiers" do
-    test "an invalid ISIN or WKN is rejected" do
-      assert {:error, changeset} =
-               Assets.create_asset(%{
-                 symbol: "QDVE.DE",
-                 name: "iShares S&P 500 IT",
-                 kind: :etf,
-                 quote_currency: "EUR",
-                 price_source: :yahoo,
-                 source_id: "QDVE.DE",
-                 isin: "IE00B44Z5B49"
-               })
+  describe "resolve_identity/2" do
+    test "an invalid ISIN is rejected" do
+      asset = stock_asset_fixture(%{isin: nil})
 
+      assert {:error, changeset} = Assets.resolve_identity(asset.id, %{isin: "IE00B44Z5B49"})
       assert %{isin: ["is not a valid ISIN"]} = errors_on(changeset)
     end
 
-    test "update_identifiers/2 fills blanks but never overwrites a stored value" do
-      asset = etf_asset_fixture(%{isin: "IE00B44Z5B48"})
+    test "fills blanks but never overwrites a stored value" do
+      asset = etf_asset_fixture(%{isin: nil, mic: nil})
 
       assert {:ok, updated} =
-               Assets.update_identifiers(asset.id, %{isin: "DE000EWG2LD7", wkn: "A1JJTD"})
+               Assets.resolve_identity(asset.id, %{
+                 isin: "IE00B44Z5B48",
+                 mic: "XFRA",
+                 ticker: "OTHER"
+               })
 
       assert updated.isin == "IE00B44Z5B48"
-      assert updated.wkn == "A1JJTD"
+      assert updated.mic == "XFRA"
+      # ticker was already stored and stays untouched
+      assert updated.ticker == asset.ticker
+      refute Asset.unresolved?(updated)
     end
 
-    test "update_identifiers/2 is a no-op when there is nothing to fill" do
-      asset = etf_asset_fixture(%{isin: "IE00B44Z5B48", wkn: "A1JJTD"})
+    test "enqueues the backfill once the asset becomes resolved" do
+      asset = etf_asset_fixture(%{isin: nil})
 
-      assert Assets.update_identifiers(asset.id, %{isin: "DE000EWG2LD7"}) == :noop
-      assert Assets.update_identifiers(asset.id, %{isin: nil, wkn: nil}) == :noop
+      assert {:ok, _updated} = Assets.resolve_identity(asset.id, %{isin: "IE00B44Z5B48"})
+      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id}
+    end
+
+    test "is a no-op when there is nothing to fill" do
+      asset = etf_asset_fixture()
+
+      assert Assets.resolve_identity(asset.id, %{isin: "IE00B44Z5B48"}) == :noop
+      assert Assets.resolve_identity(asset.id, %{isin: nil, mic: nil, ticker: nil}) == :noop
+    end
+  end
+
+  describe "list_refreshable/1" do
+    test "crypto by kind; securities minus the unresolved" do
+      crypto = crypto_asset_fixture()
+      resolved = stock_asset_fixture()
+      unresolved = etf_asset_fixture(%{isin: nil})
+
+      assert [%{id: crypto_id}] = Assets.list_refreshable(:crypto)
+      assert crypto_id == crypto.id
+
+      security_ids = Enum.map(Assets.list_refreshable(:security), & &1.id)
+      assert resolved.id in security_ids
+      refute unresolved.id in security_ids
+    end
+  end
+
+  describe "unresolved?/1 and display_code/1" do
+    test "derived unresolved state and display fallback" do
+      refute Asset.unresolved?(crypto_asset_fixture())
+      refute Asset.unresolved?(stock_asset_fixture())
+      assert Asset.unresolved?(etf_asset_fixture(%{mic: nil}))
+
+      legacy = stock_asset_fixture(%{ticker: nil, symbol: "NVDA-LEGACY", isin: nil, mic: nil})
+      assert Asset.unresolved?(legacy)
+      assert Asset.display_code(legacy) == "NVDA-LEGACY"
+      assert Asset.display_code(stock_asset_fixture()) == "NVDA"
+    end
+  end
+
+  describe "listing/1" do
+    test "maps an asset to the market-data listing shape" do
+      asset = etf_asset_fixture()
+
+      assert Assets.listing(asset) == %{
+               asset_id: asset.id,
+               kind: :etf,
+               symbol: nil,
+               ticker: "EUNL",
+               isin: asset.isin,
+               mic: "XETR",
+               quote_currency: "EUR"
+             }
     end
   end
 end

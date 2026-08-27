@@ -1,13 +1,13 @@
-defmodule Folio.Assets.SearchCache do
+defmodule Folio.MarketData.Cache do
   @moduledoc """
-  Short-lived cache for asset-resolution lookups. Yahoo's search endpoint is
-  rate-limited per IP and answers 429 long before you expect it, so repeated
-  resolutions must not each spend fresh quota.
+  Short-lived cache for market-data lookups. Free search endpoints are
+  rate-limited per IP and answer 429 long before you expect it, so repeated
+  resolutions must not each spend fresh quota. Sources also keep their own
+  mapping lookups here (namespaced keys, longer TTLs), e.g. CoinGecko's
+  symbol-to-id resolution.
 
-  Deliberately not part of the clients: `quote_meta/1` is also the intraday
-  price path (`RefreshEquityPrices`), and caching there would persist stale
-  ticks. Resolution only reads the currency and exchange, and discards the
-  price.
+  Deliberately not in front of the quote path: caching there would persist
+  stale ticks.
 
   Rate-limit responses are cached under their own, shorter TTL - while a
   provider is refusing requests there is nothing to gain from making more of
@@ -17,7 +17,7 @@ defmodule Folio.Assets.SearchCache do
 
   use GenServer
 
-  @table :folio_search_cache
+  @table :folio_market_data_cache
   @sweep_interval :timer.minutes(5)
 
   @typedoc "Milliseconds to keep a successful result and a rate-limit response."

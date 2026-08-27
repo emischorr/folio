@@ -28,11 +28,16 @@ folio-*.tar
 # Ignore assets that are produced by build tools.
 /priv/static/assets/
 
-# Ignore digested assets cache.
+# Ignore output of `mix phx.digest`: the manifest, gzipped copies, and
+# content-hashed copies (`name-<32 hex>.ext`) of every static file.
 /priv/static/cache_manifest.json
+/priv/static/**/*.gz
+/priv/static/**/*-????????????????????????????????.*
 
 # In case you use Node.js/npm, you want to ignore these.
 npm-debug.log
 /assets/node_modules/
 
 .docker
+
+.envrc

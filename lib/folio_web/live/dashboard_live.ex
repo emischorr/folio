@@ -11,8 +11,11 @@ defmodule FolioWeb.DashboardLive do
   alias Folio.Analytics
   alias Folio.Analytics.Grid
   alias Folio.Assets
+  alias Folio.Assets.Asset
   alias Folio.Assets.Candidate
   alias Folio.Assets.Identifier
+  alias Folio.MarketData
+  alias Folio.MarketData.Markets
   alias Folio.Portfolios
   alias Folio.Portfolios.Transaction
 
@@ -130,6 +133,28 @@ defmodule FolioWeb.DashboardLive do
 
   def handle_event("manual_entry", _params, socket) do
     {:noreply, assign(socket, asset_entry_mode: :manual, asset_error: nil)}
+  end
+
+  def handle_event("resolve_identity", %{"identity" => params}, socket) do
+    attrs = %{
+      isin: identifier(params["isin"]),
+      mic: presence(params["mic"]),
+      ticker: presence(params["ticker"])
+    }
+
+    case Assets.resolve_identity(socket.assigns.asset.id, attrs) do
+      {:ok, asset} ->
+        {:noreply, assign(socket, asset: asset, identity_error: nil)}
+
+      :noop ->
+        {:noreply, socket}
+
+      {:error, _changeset} ->
+        {:noreply,
+         assign(socket,
+           identity_error: "Check the identity fields - ISIN and market must be valid"
+         )}
+    end
   end
 
   def handle_event("search_entry", _params, socket) do
@@ -389,16 +414,73 @@ defmodule FolioWeb.DashboardLive do
             </.link>
             <span class="text-[17px] font-semibold">
               {@asset.name}
-              <span class="text-[13px] font-medium text-base-content/40">{@asset.symbol}</span>
+              <span class="text-[13px] font-medium text-base-content/40">
+                {Asset.display_code(@asset)}<span :if={@asset.mic}> &middot; {Markets.name(@asset.mic)}</span>
+              </span>
             </span>
-            <span
-              :if={@asset.isin}
-              id="asset-isin"
-              class="ml-auto font-mono text-[12px] tracking-tight text-base-content/40"
-            >
-              {@asset.isin}
+            <span class="ml-auto flex flex-col items-end gap-0.5">
+              <span
+                :if={@asset.isin}
+                id="asset-isin"
+                class="font-mono text-[12px] tracking-tight text-base-content/40"
+              >
+                {@asset.isin}
+              </span>
+              <span :if={@price_asof} id="asset-price-asof" class="text-[11px] text-base-content/40">
+                as of {datetime(@price_asof, @time_format)}
+              </span>
             </span>
           </header>
+          <div
+            :if={Asset.unresolved?(@asset)}
+            id="asset-unresolved"
+            class="mx-4 mb-2 flex flex-col gap-2.5 rounded-2xl border border-warning/40 bg-warning/10 px-4 py-3.5"
+          >
+            <p class="text-[13px] text-base-content/70">
+              This asset is missing part of its identity, so prices cannot be fetched.
+              Complete it to resume price updates.
+            </p>
+            <form
+              id="asset-identity-form"
+              phx-submit="resolve_identity"
+              class="grid grid-cols-3 gap-2"
+            >
+              <input
+                :if={is_nil(@asset.isin)}
+                type="text"
+                name="identity[isin]"
+                id="identity-isin"
+                placeholder="ISIN"
+                maxlength="12"
+                class="input input-sm rounded-lg font-mono text-[13px]"
+              />
+              <select
+                :if={is_nil(@asset.mic)}
+                name="identity[mic]"
+                id="identity-mic"
+                class="select select-sm rounded-lg text-[13px]"
+              >
+                <option value="">Market</option>
+                <option :for={market <- Markets.all()} value={market.mic}>
+                  {market.name} ({market.mic})
+                </option>
+              </select>
+              <input
+                :if={is_nil(@asset.ticker)}
+                type="text"
+                name="identity[ticker]"
+                id="identity-ticker"
+                placeholder="Ticker"
+                class="input input-sm rounded-lg text-[13px]"
+              />
+              <button type="submit" id="identity-save" class="btn btn-sm rounded-lg">
+                Save
+              </button>
+            </form>
+            <p :if={@identity_error} id="identity-error" class="text-[12px] text-error">
+              {@identity_error}
+            </p>
+          </div>
           <div id="asset-transactions" class="flex flex-col gap-2.5 px-4 pb-16 pt-2">
             <.link
               :for={transaction <- @transactions}
@@ -456,7 +538,9 @@ defmodule FolioWeb.DashboardLive do
                     <span class="truncate text-[15px] font-semibold">
                       {@selected_candidate.name}
                       <span class="text-[13px] font-medium text-base-content/45">
-                        {@selected_candidate.symbol}<span :if={@selected_candidate.exchange}> &middot; {@selected_candidate.exchange}</span>
+                        {Candidate.display_code(@selected_candidate)}<span :if={
+                          @selected_candidate.mic
+                        }> &middot; {Markets.name(@selected_candidate.mic)}</span>
                       </span>
                     </span>
                     <button
@@ -490,7 +574,7 @@ defmodule FolioWeb.DashboardLive do
                           phx-debounce="300"
                           autocomplete="off"
                           maxlength="12"
-                          placeholder="optional - paste to verify"
+                          placeholder="required for stocks &amp; ETFs"
                           aria-label="ISIN"
                           class="grow bg-transparent font-mono tracking-tight outline-none placeholder:font-sans placeholder:text-base-content/35"
                         />
@@ -591,11 +675,24 @@ defmodule FolioWeb.DashboardLive do
                 class="grid grid-cols-2 gap-3"
               >
                 <div>
-                  <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">Ticker</span>
+                  <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">Kind</span>
+                  <.input
+                    type="select"
+                    name="manual[kind]"
+                    id="manual-kind"
+                    value="stock"
+                    options={[{"Stock", "stock"}, {"ETF", "etf"}, {"Crypto", "crypto"}]}
+                    class="select select-lg w-full rounded-xl text-[16px]"
+                  />
+                </div>
+                <div>
+                  <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">
+                    Ticker / symbol
+                  </span>
                   <.input
                     type="text"
-                    name="manual[symbol]"
-                    id="manual-symbol"
+                    name="manual[code]"
+                    id="manual-code"
                     value=""
                     class="input input-lg w-full rounded-xl text-[16px]"
                   />
@@ -611,26 +708,19 @@ defmodule FolioWeb.DashboardLive do
                   />
                 </div>
                 <div>
-                  <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">Kind</span>
-                  <.input
-                    type="select"
-                    name="manual[kind]"
-                    id="manual-kind"
-                    value="stock"
-                    options={[{"Stock", "stock"}, {"ETF", "etf"}]}
-                    class="select select-lg w-full rounded-xl text-[16px]"
-                  />
-                </div>
-                <div>
                   <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">
-                    Exchange (optional)
+                    Market
                   </span>
                   <.input
-                    type="text"
-                    name="manual[exchange]"
-                    id="manual-exchange"
+                    type="select"
+                    name="manual[mic]"
+                    id="manual-mic"
                     value=""
-                    class="input input-lg w-full rounded-xl text-[16px]"
+                    options={[
+                      {"— (crypto)", ""}
+                      | Enum.map(Markets.all(), &{"#{&1.name} (#{&1.mic})", &1.mic})
+                    ]}
+                    class="select select-lg w-full rounded-xl text-[16px]"
                   />
                 </div>
                 <div>
@@ -647,7 +737,7 @@ defmodule FolioWeb.DashboardLive do
                 </div>
                 <div>
                   <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">
-                    ISIN (optional)
+                    ISIN
                   </span>
                   <.input
                     type="text"
@@ -655,19 +745,6 @@ defmodule FolioWeb.DashboardLive do
                     id="manual-isin"
                     value=""
                     maxlength="12"
-                    class="input input-lg w-full rounded-xl font-mono text-[16px] tracking-tight"
-                  />
-                </div>
-                <div>
-                  <span class="mb-1.5 block text-[13px] font-medium text-base-content/60">
-                    WKN (optional)
-                  </span>
-                  <.input
-                    type="text"
-                    name="manual[wkn]"
-                    id="manual-wkn"
-                    value=""
-                    maxlength="6"
                     class="input input-lg w-full rounded-xl font-mono text-[16px] tracking-tight"
                   />
                 </div>
@@ -823,6 +900,13 @@ defmodule FolioWeb.DashboardLive do
         <div class="truncate text-[15px] font-semibold">
           {@holding.name}
           <span class="text-[13px] font-medium text-base-content/40">{@holding.symbol}</span>
+          <span
+            :if={@holding.unresolved?}
+            data-role="unresolved"
+            class="rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning"
+          >
+            unresolved
+          </span>
         </div>
         <div class="text-[13px] text-base-content/50 tabular-nums">{quantity_line(@holding)}</div>
       </div>
@@ -848,6 +932,13 @@ defmodule FolioWeb.DashboardLive do
             {change_arrow(@holding.change_abs)} {money_abs(@holding.change_abs, @currency)}
             <span :if={@holding.change_pct}>({percent(@holding.change_pct)})</span>
           </div>
+          <div
+            :if={stale_as_of(@holding.price_at)}
+            data-role="price-asof"
+            class="text-[11px] text-base-content/40"
+          >
+            as of {stale_as_of(@holding.price_at)}
+          </div>
         </div>
       <% else %>
         <div class="shrink-0 text-right text-[13px] text-base-content/40" data-role="no-data">
@@ -867,8 +958,15 @@ defmodule FolioWeb.DashboardLive do
       socket.assigns.portfolio_id
       |> Portfolios.list_transactions(asset_id: asset.id)
       |> Enum.reverse()
+      
+    latest = MarketData.latest_price(asset.id)
 
-    assign(socket, asset: asset, transactions: transactions)
+    assign(socket,
+      asset: asset,
+      transactions: transactions,
+      price_asof: latest && latest.at,
+      identity_error: nil
+    )
   end
 
   defp apply_action(socket, :new, _params), do: init_form(socket, %Transaction{}, nil)
@@ -886,6 +984,7 @@ defmodule FolioWeb.DashboardLive do
   defp refresh_dashboard(socket) do
     %{portfolio_id: portfolio_id, window: window, currency: currency} = socket.assigns
     holdings = Analytics.holdings(portfolio_id, window, currency)
+    price_ages = MarketData.latest_prices(Enum.map(holdings, & &1.asset_id))
 
     socket
     |> assign(
@@ -895,7 +994,11 @@ defmodule FolioWeb.DashboardLive do
     )
     |> stream(
       :holdings,
-      Enum.map(holdings, &Map.put(&1, :sparkline, sparkline_points(&1.series))),
+      Enum.map(holdings, fn holding ->
+        holding
+        |> Map.put(:sparkline, sparkline_points(holding.series))
+        |> Map.put(:price_at, get_in(price_ages, [holding.asset_id, :at]))
+      end),
       reset: true
     )
     |> push_chart_data()
@@ -984,7 +1087,7 @@ defmodule FolioWeb.DashboardLive do
   defp parse_type(_type), do: :buy
 
   defp resolve_asset_id(%{assigns: %{asset_entry_mode: :manual}}, manual_params) do
-    case Assets.create_manual_asset(manual_attrs(manual_params)) do
+    case Assets.create_asset(manual_attrs(manual_params)) do
       {:ok, asset} -> {:ok, asset.id}
       {:error, _changeset} -> {:error, :asset_invalid}
     end
@@ -1001,29 +1104,45 @@ defmodule FolioWeb.DashboardLive do
         end
 
       asset_id ->
-        store_identifiers(asset_id, candidate)
+        store_identity(asset_id, candidate)
         {:ok, asset_id}
     end
   end
 
-  defp store_identifiers(_asset_id, %Candidate{isin: nil, wkn: nil}), do: :noop
+  # A locally known candidate may still carry an ISIN the asset lacks (the
+  # user just pasted one); fill-only, never overwriting.
+  defp store_identity(_asset_id, %Candidate{isin: nil}), do: :noop
 
-  defp store_identifiers(asset_id, %Candidate{isin: isin, wkn: wkn}),
-    do: Assets.update_identifiers(asset_id, %{isin: isin, wkn: wkn})
+  defp store_identity(asset_id, %Candidate{isin: isin}),
+    do: Assets.resolve_identity(asset_id, %{isin: isin})
 
   defp manual_attrs(params) do
     params = params || %{}
+    kind = parse_kind(params["kind"])
+    code = String.trim(params["code"] || "")
 
-    %{
-      symbol: params["symbol"] || "",
+    base = %{
       name: params["name"] || "",
-      kind: if(params["kind"] == "etf", do: :etf, else: :stock),
-      exchange: presence(params["exchange"]),
-      quote_currency: params["quote_currency"] || "",
-      isin: identifier(params["isin"]),
-      wkn: identifier(params["wkn"])
+      kind: kind,
+      quote_currency: params["quote_currency"] || ""
     }
+
+    case kind do
+      :crypto ->
+        Map.put(base, :symbol, code)
+
+      _security ->
+        Map.merge(base, %{
+          ticker: presence(code),
+          mic: presence(params["mic"]),
+          isin: identifier(params["isin"])
+        })
+    end
   end
+
+  defp parse_kind("etf"), do: :etf
+  defp parse_kind("crypto"), do: :crypto
+  defp parse_kind(_kind), do: :stock
 
   defp identifier(value) do
     case value && Identifier.normalize(value) do
@@ -1079,9 +1198,19 @@ defmodule FolioWeb.DashboardLive do
     do: "Search is unavailable right now - enter the ticker manually."
 
   defp candidate_meta(%Candidate{} = candidate) do
-    [candidate.symbol, candidate.exchange, candidate.quote_currency]
+    [Candidate.display_code(candidate), Markets.name(candidate.mic), candidate.quote_currency]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" \u00b7 ")
+  end
+
+  # A price counts as stale on the holdings list once it is older than a day;
+  # fresher ages are noise there. The asset page always shows the exact time.
+  defp stale_as_of(nil), do: nil
+
+  defp stale_as_of(at) do
+    if DateTime.diff(DateTime.utc_now(), at) > 24 * 60 * 60 do
+      Calendar.strftime(at, "%b %d")
+    end
   end
 
   defp currency_options(txn_currency), do: Enum.uniq(["EUR", "USD", txn_currency])

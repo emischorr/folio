@@ -57,7 +57,7 @@ Environment variables are read in `config/runtime.exs`, and nowhere else.
 |---|---|---|
 | `ADMIN_PASSWORD` | `admin` | Password for the bootstrapped user, hashed once on first boot |
 | `COINGECKO_API_KEY` | — | Optional free demo key; raises the crypto rate limit to 100 req/min |
-| `OPENFIGI_API_KEY` | — | Optional free key for ISIN/WKN lookup; raises the keyless 25 req/min limit |
+| `OPEN_FIGI_KEY` | — | Optional free key for ISIN/WKN lookup; raises the keyless 25 req/min limit (legacy name `OPENFIGI_API_KEY` still read) |
 | `DATABASE_URL` | — | Required in production |
 | `SECRET_KEY_BASE` | — | Required in production |
 | `PHX_HOST` | `localhost` | Hostname or IP you reach Folio at — must match the address bar |
@@ -85,51 +85,121 @@ one name.
 > still force `https://` for that hostname. Clear the pin via
 > `chrome://net-internals/#hsts` (or the Firefox equivalent) before plain HTTP loads.
 
+## Architecture: market data
+
+Assets carry only **general, vendor-neutral identity** — securities are
+ISIN + MIC (ISO 10383 venue code) + the exchange-local ticker; crypto is a
+symbol. No provider id, suffix, or source name is ever stored on an asset.
+`Folio.MarketData.Markets` is the hardcoded registry of supported venues
+(name, country, default currency, timezone, trading hours); adding a market is
+a code change with a test.
+
+The data problem is split into three concerns, each a behaviour with its own
+chain of interchangeable sources (plus a small FX behaviour):
+
+- **Lookup** (`Folio.MarketData.Sources.Lookup`) — user input (ISIN, WKN,
+  ticker, free text) → candidate listings. Used only when adding an asset.
+- **History** (`Folio.MarketData.Sources.History`) — daily closes over a date
+  range. Used by backfill and the nightly close.
+- **Quote** (`Folio.MarketData.Sources.Quote`) — the latest (possibly delayed)
+  price. Used by the periodic refresh; an optional batch callback lets a
+  source answer one provider call for many listings.
+
+`Folio.MarketData.Chain` walks the configured sources in order — the chains
+live in `config :folio, :market_data_sources`, per kind (`security` /
+`crypto`) and concern. For each source it checks the source's own
+`supports?/1` coverage declaration (skip silently), then its token bucket
+(`Folio.MarketData.RateLimiter`, budgets in `config :folio, :rate_limits` —
+an empty bucket skips the source without calling it), then calls it: the
+first non-empty success wins; empty results, failures and rate limits fall
+through to the next source. Every attempt is recorded per source and outcome
+as telemetry, counted by `Folio.MarketData.SourceStats`
+(`Folio.MarketData.source_stats/0` in iex), so a silently broken source
+becomes visible.
+
+**Mapping lives in the source.** Yahoo builds `EUNL.DE` from ticker + a
+per-MIC suffix table inside `Sources.Yahoo`; OpenFIGI maps its Bloomberg
+exchange codes to MICs inside `Sources.OpenFigi`; CoinGecko resolves
+symbol → coin id itself (cached, with pinned overrides in its config).
+The rare listing whose vendor naming breaks the rule is fixed with an
+override map in that source's config, never on the asset.
+
+**Degrade, don't zero.** If every source fails, the last known price stays
+and its age is shown ("as of …"); backfills run chunked at low Oban priority
+so they can never starve the refresh of budget; a rate-limited job snoozes
+with a capped doubling backoff and is cancelled at the limit.
+
+### Adding a source
+
+1. Implement `Folio.MarketData.Sources.Source` (`supports?/1`) plus the
+   concern behaviours it serves, in `lib/folio/market_data/sources/`. Build
+   requests with `Sources.HTTP.base/1` and record fixtures under
+   `test/support/api_responses/`.
+2. Register it in the right chain(s) in `config :folio, :market_data_sources`
+   and give it a budget in `config :folio, :rate_limits` (keyed by the
+   module's underscored basename, e.g. `:my_source`).
+3. Keep any provider-id mapping, suffix table or override map inside the
+   module or its own config key.
+
+A boundary test enforces that nothing outside `lib/folio/market_data/`
+touches sources, chain, limiter or cache — the rest of the app sees only the
+`Folio.MarketData` API plus the pure `Markets`/`Listing` modules.
+
 ## External data sources
 
-Prices and FX rates are fetched in the background by Oban workers. Every provider
-sits behind a behaviour, so swapping one means implementing that behaviour and
-changing a single line in `config :folio, :clients`.
+All endpoint notes verified 2026-08-27.
 
-| Data | Provider | Limits and caveats |
+| Data | Source | Limits and caveats |
 |---|---|---|
-| Crypto search, history, prices | [CoinGecko](https://www.coingecko.com/en/api) — `Folio.Clients.CoinGecko` | Keyless: ~5–15 req/min, history capped at ~365 days. A free demo key raises this to 100/min. |
-| Stock and ETF search, history, prices | Yahoo Finance, unofficial — `Folio.Clients.Yahoo` | Keyless but needs a browser User-Agent (the client sends one). Search results carry no currency, so it is read from the chart endpoint's metadata. Unofficial, and the most likely to break; rate-limit responses are snoozed and retried. |
-| ISIN and WKN lookup | [OpenFIGI](https://www.openfigi.com/api) — `Folio.Clients.OpenFigi` | Keyless: 25 req/min per IP; `OPENFIGI_API_KEY` raises that. Maps an identifier to tickers only — it never returns one. |
-| FX rates (daily, EUR pivot) | [Frankfurter](https://frankfurter.dev) / ECB — `Folio.Clients.Frankfurter` | Keyless, business days only — weekend gaps are expected and resolved by "latest rate at or before" lookups. |
+| Securities lookup (ISIN, WKN) | [OpenFIGI](https://www.openfigi.com/api) — `Sources.OpenFigi` | Keyless: 25 req/min per IP; `OPEN_FIGI_KEY` raises that. Maps identifier → per-venue tickers; never returns an identifier, so WKN hits carry no ISIN (typed in by hand, checksum-validated). Bloomberg exchange codes are mapped to MICs in-source. |
+| Securities quotes (EU) | Tradegate — `Sources.Tradegate` | Keyless, ISIN-native JSON at `www.tradegatebsx.com/refresh.php` (`tradegate.de` 301s there). EUR only. The price is Tradegate's own venue price, used as a delayed proxy for German-retail and Euronext EUR listings. Reports `last: 0` pre-open, which the source treats as "no quote". |
+| Securities quotes (XETR/XFRA) | Börse Frankfurt — `Sources.BoerseFrankfurt` | Keyless JSON at `api.boerse-frankfurt.de/v1/data/quote_box/single?isin=…&mic=…`; the MD5 trace headers older community docs describe are no longer required for quotes. The `price_history` and chart endpoints answer an empty `{}` regardless of headers, so **history is not implemented** for it. |
+| Securities history + fallback quotes/search | Yahoo Finance, unofficial — `Sources.Yahoo` | Keyless but needs a browser User-Agent. The most fragile provider and the scarcest budget — always last in every chain. The EU consent/crumb handshake is not implemented; if Yahoo starts demanding it, this source fails and the chain degrades. Symbols are built from ticker + per-MIC suffix, with per-ISIN overrides in config. |
+| Crypto lookup, history, quotes | [CoinGecko](https://www.coingecko.com/en/api) — `Sources.CoinGecko` | Keyless: ~5–15 req/min, history capped at ~365 days; a free demo key raises this to 100/min. Symbol → coin id resolved in-source via `/search`, cached a day, pinned by `id_overrides` for ambiguous symbols. |
+| FX rates (daily, EUR pivot) | [Frankfurter](https://frankfurter.dev) / ECB — `Sources.Frankfurter` | Keyless, business days only — weekend gaps are expected and resolved by "latest rate at or before" lookups. |
 
-Stooq was considered for equities and rejected: it now sits behind a JavaScript
-proof-of-work check and cannot be used server-side.
+Dead ends, kept here so they are not retried:
+
+- **Stooq** (verified again 2026-08-27): every endpoint serves a JavaScript
+  proof-of-work challenge and cannot be used server-side.
+- **Portfolio Report** (portfolio-report.net, verified 2026-08-27): the domain
+  no longer resolves; the community securities service is discontinued.
 
 ### Searching for European instruments
 
-Three things make Yahoo search awkward for UCITS ETFs and ETCs, and the client and
-resolver each work around one:
+Three things make Yahoo search awkward for UCITS ETFs and ETCs, and the Yahoo
+source works around each:
 
 - Yahoo types many German and Stuttgart listings as `MUTUALFUND` rather than `ETF`,
-  so the client accepts that type and maps it to `:etf`. Excluding it hides whole
+  so the source accepts that type and maps it to `:etf`. Excluding it hides whole
   exchanges — EUWAX Gold II has no other listing.
 - A full official name (`… UCITS ETF (Acc)`) often scores zero. When a search comes
-  back empty the resolver retries once with the noise words and parentheticals
+  back empty the source retries once with the noise words and parentheticals
   stripped, and once with the first four words.
-- An ISIN usually resolves on Yahoo directly; when it does not, and for every WKN,
-  the resolver maps the identifier to tickers through OpenFIGI and searches those.
+- An ISIN goes to OpenFIGI first; only when it knows nothing does the chain fall
+  through to a Yahoo search. Every WKN goes through OpenFIGI (`ID_WERTPAPIER`).
 
-Yahoo's search endpoint is also rate-limited per IP and returns 429 well before you
-would expect — the chart endpoint used for prices is a separate, far more generous
-bucket. `Folio.Assets.SearchCache` therefore fronts every resolution lookup (10
-minutes for hits, a 60-second negative cache for rate limits), rate-limit responses
-are never retried at the HTTP layer, and the asset picker says so explicitly rather
-than showing an empty dropdown when search is throttled.
+Yahoo's search endpoint is rate-limited per IP and returns 429 well before you
+would expect. The chart endpoint used for prices is a separate bucket, but not an
+immune one — it answers 429 too, which stops price fetching rather than search.
+`Folio.MarketData.Cache` therefore fronts every lookup (10 minutes for hits, a
+60-second negative cache for rate limits), rate-limit responses are never retried
+at the HTTP layer, and the asset picker says so explicitly rather than showing an
+empty dropdown when search is throttled. Background jobs back off exponentially on
+a 429 and cancel once `Folio.MarketData.Backoff`'s snooze limit is reached, so a
+throttled provider can never leave a job spinning indefinitely.
+
+Candidate currencies default to the venue's currency from the Markets registry
+(a search must not spend chart-endpoint budget per candidate); the rare listing
+quoted in a non-default currency is fixed by editing the currency on the form.
 
 **No provider returns an ISIN for a ticker.** Yahoo omits it everywhere and OpenFIGI
-only maps in the identifier → ticker direction, so an asset's ISIN is stored when it
-was the search query and is otherwise typed in by hand (checksum-validated).
-
-To swap a provider, implement `Folio.Clients.CryptoClient`,
-`Folio.Clients.EquityClient`, `Folio.Clients.SecurityIdClient` or
-`Folio.Clients.FxClient` and point the matching key in `config :folio, :clients` (in
-`config/config.exs`) at your module.
+only maps in the identifier → ticker direction, so a security's ISIN is stored when
+it was the search query and is otherwise typed in by hand (checksum-validated) —
+creating a security requires it, since ISIN + MIC is the canonical identity.
+Securities migrated from the earlier vendor-identity schema may lack parts of their
+identity; they show an "unresolved" badge and a repair form on the asset page, and
+are skipped by the refresh until repaired.
 
 ## Development
 

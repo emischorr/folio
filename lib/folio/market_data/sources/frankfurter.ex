@@ -1,12 +1,12 @@
-defmodule Folio.Clients.Frankfurter do
+defmodule Folio.MarketData.Sources.Frankfurter do
   @moduledoc """
-  Frankfurter client (keyless ECB reference rates, EUR base). Business days
-  only - weekend gaps are expected and handled by at-or-before lookups.
+  Frankfurter FX source (keyless ECB reference rates, EUR base). Business
+  days only - weekend gaps are expected and handled by at-or-before lookups.
   """
 
-  @behaviour Folio.Clients.FxClient
+  @behaviour Folio.MarketData.Sources.FX
 
-  import Folio.Clients.HTTP, only: [base: 1, handle: 1, to_decimal: 1]
+  import Folio.MarketData.Sources.HTTP, only: [base: 1, handle: 1, to_decimal: 1]
 
   @base_url "https://api.frankfurter.dev/v1"
 

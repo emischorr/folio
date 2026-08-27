@@ -1,12 +1,12 @@
-defmodule Folio.Clients.FrankfurterTest do
+defmodule Folio.MarketData.Sources.FrankfurterTest do
   use ExUnit.Case, async: true
 
   import Folio.ApiStubCase
 
-  alias Folio.Clients.Frankfurter
+  alias Folio.MarketData.Sources.Frankfurter
 
   test "latest_rates/1 parses the dated EUR-pivot rates" do
-    Req.Test.stub(Folio.Clients, fn conn ->
+    Req.Test.stub(Folio.MarketData.Sources, fn conn ->
       assert conn.host == "api.frankfurter.dev"
       assert conn.request_path == "/v1/latest"
       assert conn.params["base"] == "EUR"
@@ -19,7 +19,7 @@ defmodule Folio.Clients.FrankfurterTest do
   end
 
   test "historical_rates/3 returns ascending dated entries" do
-    Req.Test.stub(Folio.Clients, fn conn ->
+    Req.Test.stub(Folio.MarketData.Sources, fn conn ->
       assert conn.request_path == "/v1/2026-08-17..2026-08-21"
       json_fixture(conn, "frankfurter_series.json")
     end)
@@ -32,7 +32,7 @@ defmodule Folio.Clients.FrankfurterTest do
   end
 
   test "unexpected statuses become error tuples" do
-    Req.Test.stub(Folio.Clients, fn conn -> json_body(conn, "{}", 404) end)
+    Req.Test.stub(Folio.MarketData.Sources, fn conn -> json_body(conn, "{}", 404) end)
 
     assert {:error, {:http_status, 404}} = Frankfurter.latest_rates(["XXX"])
   end

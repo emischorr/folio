@@ -7,9 +7,14 @@ defmodule Folio.MarketData do
 
   import Ecto.Query
 
+  alias Folio.MarketData.Cache
+  alias Folio.MarketData.Chain
   alias Folio.MarketData.DailyPrice
   alias Folio.MarketData.FxRate
   alias Folio.MarketData.IntradayPrice
+  alias Folio.MarketData.Listing
+  alias Folio.MarketData.SourceStats
+  alias Folio.MarketData.Sources.Lookup
   alias Folio.MarketData.Workers.BackfillAssetPrices
   alias Folio.MarketData.Workers.BackfillFxRates
   alias Folio.Repo
@@ -23,6 +28,80 @@ defmodule Folio.MarketData do
   @doc "PubSub topic where `{:prices_updated, asset_id}` / `{:fx_updated, currency}` are broadcast after upserts."
   @spec topic() :: String.t()
   def topic, do: "market_data"
+
+  @doc """
+  Candidate listings for user input, via the configured Lookup chain.
+
+  `kind` picks the chain (`:security` or `:crypto`); a bare string is treated
+  as free text. Results and rate-limit refusals are cached briefly so a
+  repeated search never spends fresh provider quota.
+  """
+  @spec lookup(:security | :crypto, Lookup.input() | String.t()) ::
+          {:ok, [map()]} | {:error, :unsupported | :rate_limited | :failed}
+  def lookup(kind, input) when kind in [:security, :crypto] do
+    input = normalize_lookup_input(input)
+
+    Cache.fetch({:lookup, kind, input}, lookup_ttls(), fn ->
+      Chain.run(:lookup, sources(kind, :lookup), input, & &1.lookup(input))
+    end)
+  end
+
+  @doc "Daily closes for a listing within `[from, to]`, via the History chain."
+  @spec fetch_history(Listing.t(), Date.t(), Date.t()) ::
+          {:ok, [%{date: Date.t(), price: Decimal.t()}]}
+          | {:error, :unsupported | :rate_limited | :failed}
+  def fetch_history(%{kind: kind} = listing, from, to) do
+    Chain.run(
+      :history,
+      sources(chain_kind(kind), :history),
+      listing,
+      & &1.daily_history(listing, from, to)
+    )
+  end
+
+  @doc "Latest (possibly delayed) price for a listing, via the Quote chain."
+  @spec fetch_quote(Listing.t()) ::
+          {:ok, %{price: Decimal.t(), at: DateTime.t() | nil, currency: String.t() | nil}}
+          | {:error, :unsupported | :rate_limited | :failed}
+  def fetch_quote(%{kind: kind} = listing) do
+    Chain.run(:quote, sources(chain_kind(kind), :quote), listing, & &1.fetch_quote(listing))
+  end
+
+  @doc """
+  Latest prices for several same-kind, same-currency listings, keyed by asset
+  id. Sources exporting the batch callback answer one provider call for the
+  whole group.
+  """
+  @spec fetch_quotes([Listing.t()]) ::
+          {:ok, %{pos_integer() => map()}} | {:error, :unsupported | :rate_limited | :failed}
+  def fetch_quotes([%{kind: kind} | _rest] = listings) do
+    Chain.run(
+      :quote,
+      sources(chain_kind(kind), :quote),
+      hd(listings),
+      &batch_quotes(&1, listings)
+    )
+  end
+
+  @doc "Latest ECB reference rates via the FX source (chain-run for uniform stats)."
+  @spec fetch_latest_rates([String.t()]) ::
+          {:ok, %{date: Date.t(), rates: map()}}
+          | {:error, :unsupported | :rate_limited | :failed}
+  def fetch_latest_rates(currencies) do
+    Chain.run(:fx, [fx_source()], nil, & &1.latest_rates(currencies))
+  end
+
+  @doc "Historical ECB reference rates via the FX source."
+  @spec fetch_historical_rates([String.t()], Date.t(), Date.t()) ::
+          {:ok, [%{date: Date.t(), rates: map()}]}
+          | {:error, :unsupported | :rate_limited | :failed}
+  def fetch_historical_rates(currencies, from, to) do
+    Chain.run(:fx, [fx_source()], nil, & &1.historical_rates(currencies, from, to))
+  end
+
+  @doc "Per-source outcome counters, for debugging a silently broken source."
+  @spec source_stats() :: %{{atom(), atom(), atom()} => pos_integer()}
+  def source_stats, do: SourceStats.snapshot()
 
   @doc "Idempotently stores daily closes. `entries` is a list of `%{date: Date.t(), price: Decimal.t()}`."
   @spec upsert_daily_prices(pos_integer(), [map()]) :: :ok
@@ -166,17 +245,14 @@ defmodule Folio.MarketData do
   @doc """
   Enqueues backfill jobs so daily prices for the asset and FX rates for its
   quote currency reach back to `from_date`. No-op when history already covers
-  it. Duplicate enqueues are absorbed by unique jobs.
+  it. Duplicate enqueues are absorbed by unique jobs; the price backfill
+  derives its own window at execution time, so an absorbed enqueue still
+  widens the range rather than dropping it.
   """
   @spec ensure_history(pos_integer(), Date.t(), String.t()) :: :ok
   def ensure_history(asset_id, from_date, quote_currency) do
-    if covered?(earliest_daily_price_date(asset_id), from_date) do
-      :ok
-    else
-      {:ok, _job} =
-        Oban.insert(
-          BackfillAssetPrices.new(%{asset_id: asset_id, from: Date.to_iso8601(from_date)})
-        )
+    unless covered?(earliest_daily_price_date(asset_id), from_date) do
+      {:ok, _job} = Oban.insert(BackfillAssetPrices.new(%{asset_id: asset_id}))
     end
 
     ensure_fx_history(quote_currency, from_date)
@@ -193,6 +269,21 @@ defmodule Folio.MarketData do
     end
 
     :ok
+  end
+
+  @doc """
+  Cancels any live price backfill for the asset and enqueues a fresh one,
+  bypassing both the coverage check and job uniqueness. The operator escape
+  hatch for a backfill that failed or is backing off - call it from
+  `bin/folio remote`.
+  """
+  @spec force_backfill(pos_integer()) :: {:ok, Oban.Job.t()} | {:error, term()}
+  def force_backfill(asset_id) do
+    [worker: BackfillAssetPrices, args: %{asset_id: asset_id}]
+    |> Oban.Job.query()
+    |> Oban.cancel_all_jobs()
+
+    Oban.insert(BackfillAssetPrices.new(%{asset_id: asset_id}))
   end
 
   @doc """
@@ -225,6 +316,74 @@ defmodule Folio.MarketData do
   def prune_intraday(cutoff) do
     {count, _returning} = Repo.delete_all(from ip in IntradayPrice, where: ip.at < ^cutoff)
     count
+  end
+
+  @doc """
+  The most recent known price per asset id, like `latest_price/1` but one
+  query pair for a whole holdings list.
+  """
+  @spec latest_prices([pos_integer()]) ::
+          %{pos_integer() => %{at: DateTime.t(), price: Decimal.t()}}
+  def latest_prices(asset_ids) do
+    intraday =
+      Repo.all(
+        from ip in IntradayPrice,
+          where: ip.asset_id in ^asset_ids,
+          distinct: ip.asset_id,
+          order_by: [asc: ip.asset_id, desc: ip.at],
+          select: %{asset_id: ip.asset_id, at: ip.at, price: ip.price}
+      )
+
+    daily =
+      Repo.all(
+        from dp in DailyPrice,
+          where: dp.asset_id in ^asset_ids,
+          distinct: dp.asset_id,
+          order_by: [asc: dp.asset_id, desc: dp.date],
+          select: %{asset_id: dp.asset_id, date: dp.date, price: dp.price}
+      )
+
+    daily_map =
+      Map.new(daily, &{&1.asset_id, %{at: midnight_utc(&1.date), price: &1.price}})
+
+    intraday_map = Map.new(intraday, &{&1.asset_id, %{at: &1.at, price: &1.price}})
+
+    Map.merge(daily_map, intraday_map, fn _asset_id, close, tick ->
+      Enum.max_by([close, tick], & &1.at, DateTime)
+    end)
+  end
+
+  defp normalize_lookup_input({_type, _value} = input), do: input
+  defp normalize_lookup_input(query) when is_binary(query), do: {:text, query}
+
+  defp lookup_ttls do
+    config = Application.get_env(:folio, :search_cache, [])
+    %{ok: Keyword.get(config, :ok_ttl_ms, 0), error: Keyword.get(config, :error_ttl_ms, 0)}
+  end
+
+  defp sources(kind, concern) do
+    :folio
+    |> Application.get_env(:market_data_sources, [])
+    |> get_in([kind, concern]) || []
+  end
+
+  defp chain_kind(:crypto), do: :crypto
+  defp chain_kind(_security), do: :security
+
+  defp fx_source, do: Application.get_env(:folio, :market_data_sources, [])[:fx]
+
+  defp batch_quotes(source, listings) do
+    if function_exported?(source, :fetch_quotes, 1) do
+      source.fetch_quotes(listings)
+    else
+      quotes =
+        for listing <- listings,
+            {:ok, quote_result} <- [source.fetch_quote(listing)],
+            into: %{},
+            do: {listing.asset_id, quote_result}
+
+      {:ok, quotes}
+    end
   end
 
   defp covered?(nil, _from_date), do: false

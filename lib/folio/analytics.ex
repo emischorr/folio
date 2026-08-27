@@ -28,6 +28,7 @@ defmodule Folio.Analytics do
           symbol: String.t(),
           name: String.t(),
           kind: Assets.Asset.kind(),
+          unresolved?: boolean(),
           quantity: Decimal.t(),
           value: Decimal.t(),
           change_abs: Decimal.t(),
@@ -82,7 +83,7 @@ defmodule Folio.Analytics do
     quantities = Engine.holdings_at(dataset, now)
 
     dataset.assets
-    |> Enum.map(fn {asset_id, %{symbol: symbol, name: name, kind: kind}} ->
+    |> Enum.map(fn {asset_id, %{symbol: symbol, name: name, kind: kind} = entry} ->
       scoped = Dataset.scope_to_asset(dataset, asset_id)
       value = Engine.value_at(scoped, now, display_currency)
 
@@ -91,6 +92,7 @@ defmodule Folio.Analytics do
         symbol: symbol,
         name: name,
         kind: kind,
+        unresolved?: entry.unresolved?,
         quantity: Map.get(quantities, asset_id, @zero),
         value: value,
         series: Engine.value_series(scoped, grid, display_currency),
@@ -162,11 +164,18 @@ defmodule Folio.Analytics do
     }
   end
 
+  # `symbol` is the display code: the exchange ticker for securities, the
+  # crypto symbol otherwise.
   defp asset_entry(asset_id) do
-    %{symbol: symbol, name: name, kind: kind, quote_currency: quote_currency} =
-      Assets.get_asset!(asset_id)
+    asset = Assets.get_asset!(asset_id)
 
-    %{symbol: symbol, name: name, kind: kind, quote_currency: quote_currency}
+    %{
+      symbol: Assets.Asset.display_code(asset),
+      name: asset.name,
+      kind: asset.kind,
+      quote_currency: asset.quote_currency,
+      unresolved?: Assets.Asset.unresolved?(asset)
+    }
   end
 
   defp txn_entry(txn) do

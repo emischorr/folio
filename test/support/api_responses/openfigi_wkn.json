@@ -1,0 +1,42 @@
+[
+    {
+        "data": [
+            {
+                "figi": "BBG004L8LDW6",
+                "name": "ISHS CORE MSCI WORLD",
+                "ticker": "EUNL",
+                "exchCode": "GR",
+                "compositeFIGI": "BBG004L8LDW6",
+                "securityType": "ETP",
+                "marketSector": "Equity",
+                "shareClassFIGI": "BBG004L8LF95",
+                "securityType2": "Mutual Fund",
+                "securityDescription": "EUNL"
+            },
+            {
+                "figi": "BBG004L8LDX5",
+                "name": "ISHS CORE MSCI WORLD",
+                "ticker": "EUNL",
+                "exchCode": "GF",
+                "compositeFIGI": "BBG004L8LDW6",
+                "securityType": "ETP",
+                "marketSector": "Equity",
+                "shareClassFIGI": "BBG004L8LF95",
+                "securityType2": "Mutual Fund",
+                "securityDescription": "EUNL"
+            },
+            {
+                "figi": "BBG004L8LDY4",
+                "name": "ISHS CORE MSCI WORLD",
+                "ticker": "IWDA",
+                "exchCode": "QX",
+                "compositeFIGI": "BBG004L8LDW6",
+                "securityType": "ETP",
+                "marketSector": "Equity",
+                "shareClassFIGI": "BBG004L8LF95",
+                "securityType2": "Mutual Fund",
+                "securityDescription": "IWDA"
+            }
+        ]
+    }
+]

@@ -4,9 +4,12 @@ defmodule Folio.MarketData.Workers.BackfillFxRates do
   and stores them. Unique per currency.
   """
 
+  @max_attempts 5
+  @snooze_limit 5
+
   use Oban.Worker,
     queue: :market_data,
-    max_attempts: 5,
+    max_attempts: @max_attempts,
     unique: [
       period: :infinity,
       states: [:available, :scheduled, :executing, :retryable, :suspended],
@@ -14,12 +17,13 @@ defmodule Folio.MarketData.Workers.BackfillFxRates do
     ]
 
   alias Folio.MarketData
+  alias Folio.MarketData.Backoff
 
   @impl true
-  def perform(%Oban.Job{args: %{"currency" => currency, "from" => from_iso}}) do
+  def perform(%Oban.Job{args: %{"currency" => currency, "from" => from_iso}} = job) do
     from = Date.from_iso8601!(from_iso)
 
-    case fx_client().historical_rates([currency], from, Date.utc_today()) do
+    case MarketData.fetch_historical_rates([currency], from, Date.utc_today()) do
       {:ok, entries} ->
         rows =
           for %{date: date, rates: %{^currency => rate}} <- entries, do: %{date: date, rate: rate}
@@ -27,12 +31,10 @@ defmodule Folio.MarketData.Workers.BackfillFxRates do
         MarketData.upsert_fx_rates(currency, rows)
 
       {:error, :rate_limited} ->
-        {:snooze, 120}
+        Backoff.snooze_or_cancel(job, @max_attempts, @snooze_limit)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
-
-  defp fx_client, do: Application.get_env(:folio, :clients)[:fx]
 end
