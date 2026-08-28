@@ -145,6 +145,7 @@ defmodule Folio.AnalyticsTest do
 
     btc_position = Analytics.asset_position(portfolio.id, bitcoin.id, "EUR", "EUR", now: @now)
     assert Decimal.eq?(btc_position.quantity, "2")
+    assert Decimal.eq?(btc_position.quantity_change_12m, "2")
     assert Decimal.eq?(btc_position.value_now, "280")
     assert Decimal.eq?(btc_position.value_buy, "200")
     assert Decimal.eq?(btc_position.price_now, "140")
@@ -200,6 +201,42 @@ defmodule Folio.AnalyticsTest do
     assert Decimal.eq?(position.price_buy, "130")
     assert Decimal.eq?(position.value_buy, "130")
     assert Decimal.eq?(position.price_now, "140")
+  end
+
+  test "asset_position's quantity_change_12m only counts transactions inside the trailing 365 days" do
+    portfolio = portfolio_fixture()
+    bitcoin = crypto_asset_fixture()
+    seed_daily_prices(bitcoin.id, ~D[2025-01-06], ~D[2025-01-10], "100", "10")
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      executed_at: ~U[2023-01-01 10:00:00Z],
+      quantity: "2",
+      price_per_unit: "100"
+    })
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      executed_at: ~U[2024-06-01 10:00:00Z],
+      quantity: "1",
+      price_per_unit: "100"
+    })
+
+    transaction_fixture(%{
+      portfolio_id: portfolio.id,
+      asset_id: bitcoin.id,
+      type: :sell,
+      executed_at: ~U[2024-12-01 10:00:00Z],
+      quantity: "1",
+      price_per_unit: "100"
+    })
+
+    position = Analytics.asset_position(portfolio.id, bitcoin.id, "EUR", "EUR", now: @now)
+
+    assert Decimal.eq?(position.quantity, "2")
+    assert Decimal.eq?(position.quantity_change_12m, "0")
   end
 
   test "asset_position is nil once the position is fully sold" do

@@ -573,52 +573,76 @@ defmodule FolioWeb.DashboardLive do
               </div>
             </div>
           </div>
-          <div :if={@asset_position} id="asset-position" class="mt-4 grid grid-cols-2 gap-2.5 px-4">
-            <div id="asset-position-value" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
-              <div class="text-[13px] font-medium text-base-content/50">Value</div>
-              <div class="mt-0.5 text-[15px] font-semibold tabular-nums">
-                {money(@asset_position.value_now, @asset_currency)}
+          <div :if={@asset_position} class="mt-8 px-4">
+            <h2 class="text-[13px] font-semibold uppercase tracking-wide text-base-content">
+              My position
+            </h2>
+            <div id="asset-position" class="mt-2.5 grid grid-cols-2 gap-2.5">
+              <div id="asset-position-value" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
+                <div class="text-[13px] font-medium text-base-content/50">Value</div>
+                <div class="mt-0.5 text-[15px] font-semibold tabular-nums">
+                  {money(@asset_position.value_now, @asset_currency)}
+                </div>
+                <div class="text-[12px] text-base-content/40 tabular-nums">
+                  vs {money(@asset_position.value_buy, @asset_currency)} at buy
+                </div>
               </div>
-              <div class="text-[12px] text-base-content/40 tabular-nums">
-                vs {money(@asset_position.value_buy, @asset_currency)} at buy
+              <div id="asset-position-price" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
+                <div class="text-[13px] font-medium text-base-content/50">Price per unit</div>
+                <div class="mt-0.5 text-[15px] font-semibold tabular-nums">
+                  {money(@asset_position.price_now, @asset_currency)}
+                </div>
+                <div class="text-[12px] text-base-content/40 tabular-nums">
+                  vs {money(@asset_position.price_buy, @asset_currency)} at buy
+                </div>
               </div>
-            </div>
-            <div id="asset-position-price" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
-              <div class="text-[13px] font-medium text-base-content/50">Price per unit</div>
-              <div class="mt-0.5 text-[15px] font-semibold tabular-nums">
-                {money(@asset_position.price_now, @asset_currency)}
+              <div id="asset-position-profit" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
+                <div class="text-[13px] font-medium text-base-content/50">Profit</div>
+                <div class={[
+                  "mt-0.5 text-[15px] font-semibold tabular-nums",
+                  change_class(@asset_position.profit_abs)
+                ]}>
+                  {change_arrow(@asset_position.profit_abs)} {money_abs(
+                    @asset_position.profit_abs,
+                    @asset_currency
+                  )}
+                </div>
               </div>
-              <div class="text-[12px] text-base-content/40 tabular-nums">
-                vs {money(@asset_position.price_buy, @asset_currency)} at buy
+              <div id="asset-position-return" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
+                <div class="text-[13px] font-medium text-base-content/50">Return</div>
+                <div class={[
+                  "mt-0.5 text-[15px] font-semibold tabular-nums",
+                  change_class(@asset_position.profit_abs)
+                ]}>
+                  <%= if @asset_position.profit_pct do %>
+                    {change_arrow(@asset_position.profit_abs)} {percent(@asset_position.profit_pct)}
+                  <% else %>
+                    &mdash;
+                  <% end %>
+                </div>
               </div>
-            </div>
-            <div id="asset-position-profit" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
-              <div class="text-[13px] font-medium text-base-content/50">Profit</div>
-              <div class={[
-                "mt-0.5 text-[15px] font-semibold tabular-nums",
-                change_class(@asset_position.profit_abs)
-              ]}>
-                {change_arrow(@asset_position.profit_abs)} {money_abs(
-                  @asset_position.profit_abs,
-                  @asset_currency
-                )}
-              </div>
-            </div>
-            <div id="asset-position-return" class="rounded-2xl bg-base-200/60 px-4 py-3.5">
-              <div class="text-[13px] font-medium text-base-content/50">Return</div>
-              <div class={[
-                "mt-0.5 text-[15px] font-semibold tabular-nums",
-                change_class(@asset_position.profit_abs)
-              ]}>
-                <%= if @asset_position.profit_pct do %>
-                  {change_arrow(@asset_position.profit_abs)} {percent(@asset_position.profit_pct)}
-                <% else %>
-                  &mdash;
-                <% end %>
+              <div
+                id="asset-position-quantity"
+                class="col-span-2 rounded-2xl bg-base-200/60 px-4 py-3.5"
+              >
+                <div class="text-[13px] font-medium text-base-content/50">Quantity</div>
+                <div class="mt-0.5 text-[15px] font-semibold tabular-nums">
+                  {quantity_line(%{
+                    kind: @asset.kind,
+                    symbol: Asset.display_code(@asset),
+                    quantity: @asset_position.quantity
+                  })}
+                </div>
+                <div class="text-[12px] text-base-content/40 tabular-nums">
+                  {quantity_change_label(@asset_position.quantity_change_12m)} last 12 months
+                </div>
               </div>
             </div>
           </div>
-          <div id="asset-transactions" class="flex flex-col gap-2.5 px-4 pb-16 pt-2">
+          <div id="asset-transactions" class="mt-8 flex flex-col gap-2.5 px-4 pb-16">
+            <h2 class="text-[13px] font-semibold uppercase tracking-wide text-base-content">
+              Transactions
+            </h2>
             <.link
               :for={transaction <- @transactions}
               id={"transaction-#{transaction.id}"}
@@ -1403,6 +1427,14 @@ defmodule FolioWeb.DashboardLive do
     do: "#{quantity(quantity)} #{symbol}"
 
   defp quantity_line(%{quantity: quantity}), do: "#{quantity(quantity)} shares"
+
+  defp quantity_change_label(change) do
+    cond do
+      Decimal.eq?(change, 0) -> "No change"
+      Decimal.positive?(change) -> "+#{quantity(change)}"
+      true -> "−#{quantity(Decimal.abs(change))}"
+    end
+  end
 
   defp gain?(change), do: not Decimal.negative?(change)
 

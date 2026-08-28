@@ -106,6 +106,7 @@ defmodule Folio.Analytics do
 
   @type position :: %{
           quantity: Decimal.t(),
+          quantity_change_12m: Decimal.t(),
           value_now: Decimal.t(),
           value_buy: Decimal.t(),
           price_now: Decimal.t(),
@@ -116,17 +117,18 @@ defmodule Folio.Analytics do
 
   @doc """
   Aggregate position for the asset's currently held quantity: value and
-  price-per-unit now vs. at buy time, and profit since buy, all in the
-  display currency. Held quantity and buy price come from FIFO-matching
-  sells against the oldest buys first (`Engine.open_lots/1`). Nil when
-  nothing is currently held, the current price is unknown, or a needed FX
-  rate is missing.
+  price-per-unit now vs. at buy time, profit since buy, and the net quantity
+  change over the trailing 365 days, all in the display currency. Held
+  quantity and buy price come from FIFO-matching sells against the oldest
+  buys first (`Engine.open_lots/1`). Nil when nothing is currently held, the
+  current price is unknown, or a needed FX rate is missing.
   """
   @spec asset_position(pos_integer(), pos_integer(), String.t(), String.t(), keyword()) ::
           position() | nil
   def asset_position(portfolio_id, asset_id, quote_currency, display_currency, opts \\ []) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
-    lots = portfolio_id |> Portfolios.list_transactions(asset_id: asset_id) |> Engine.open_lots()
+    txns = Portfolios.list_transactions(portfolio_id, asset_id: asset_id)
+    lots = Engine.open_lots(txns)
     quantity = Enum.reduce(lots, @zero, &Decimal.add(&1.quantity, &2))
 
     with false <- Decimal.eq?(quantity, @zero),
@@ -138,6 +140,7 @@ defmodule Folio.Analytics do
 
       %{
         quantity: quantity,
+        quantity_change_12m: quantity_change_since(txns, DateTime.add(now, -365, :day)),
         value_now: value_now,
         value_buy: value_buy,
         price_now: price_now,
@@ -167,6 +170,15 @@ defmodule Folio.Analytics do
       |> Map.new(&{&1, currency_rates(&1)})
 
     Engine.convert(amount, from_currency, to_currency, fx, at)
+  end
+
+  defp quantity_change_since(txns, cutoff) do
+    txns
+    |> Enum.filter(&(DateTime.compare(&1.executed_at, cutoff) != :lt))
+    |> Enum.reduce(@zero, fn
+      %{type: :buy, quantity: quantity}, acc -> Decimal.add(acc, quantity)
+      %{type: :sell, quantity: quantity}, acc -> Decimal.sub(acc, quantity)
+    end)
   end
 
   defp lots_value(lots, display_currency, at) do
