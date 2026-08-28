@@ -228,6 +228,13 @@ defmodule FolioWeb.DashboardLiveTest do
       assert view |> element("#asset-position-price") |> render() =~ "at buy"
       assert has_element?(view, "#asset-position-profit")
       assert has_element?(view, "#asset-position-return")
+
+      assert has_element?(view, "h2", "My position")
+      assert has_element?(view, "h2", "Transactions")
+      assert view |> element("#asset-position-quantity") |> render() =~ "2 BTC"
+
+      assert view |> element("#asset-position-quantity") |> render() =~
+               "+2 last 12 months"
     end
 
     test "switching the asset currency recomputes the position tiles", %{
@@ -321,6 +328,8 @@ defmodule FolioWeb.DashboardLiveTest do
       {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
 
       refute has_element?(view, "#asset-position")
+      refute has_element?(view, "h2", "My position")
+      assert has_element?(view, "h2", "Transactions")
     end
   end
 
