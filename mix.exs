@@ -72,6 +72,7 @@ defmodule Folio.MixProject do
       {:oban, "~> 2.23"},
       {:argon2_elixir, "~> 4.1"},
       {:decimal, "~> 3.0"},
+      {:nimble_csv, "~> 1.2"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},

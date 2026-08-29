@@ -25,7 +25,11 @@ defmodule FolioWeb.Router do
       live "/assets/:asset_id", DashboardLive, :asset
       live "/transactions/new", DashboardLive, :new
       live "/transactions/:id/edit", DashboardLive, :edit
+      live "/import-export", DashboardLive, :import_export
     end
+
+    get "/export/transactions", ExportController, :all
+    get "/export/transactions/:asset_id", ExportController, :asset
   end
 
   # Other scopes may use custom stacks.

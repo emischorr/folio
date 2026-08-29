@@ -63,6 +63,20 @@ defmodule Folio.Assets do
   def resolve(query), do: Resolver.resolve(query)
 
   @doc """
+  Fetches an asset by its vendor-neutral identity: symbol for crypto,
+  ISIN + MIC for securities. Used to find-or-create an asset without
+  reaching into the caller's domain for a full asset struct.
+  """
+  @spec get_by_identity(map()) :: Asset.t() | nil
+  def get_by_identity(%{kind: :crypto, symbol: symbol}) do
+    Repo.get_by(Asset, kind: :crypto, symbol: String.upcase(symbol))
+  end
+
+  def get_by_identity(%{isin: isin, mic: mic}) when is_binary(isin) and is_binary(mic) do
+    Repo.get_by(Asset, isin: Identifier.normalize(isin), mic: mic)
+  end
+
+  @doc """
   Creates an asset from a resolver candidate or manual entry - the attrs are
   the same vendor-neutral identity either way - and enqueues an initial price
   backfill.

@@ -14,6 +14,12 @@ defmodule Folio.Portfolios do
   alias Folio.Portfolios.Transaction
   alias Folio.Repo
 
+  @type import_result :: %{
+          inserted: non_neg_integer(),
+          skipped: non_neg_integer(),
+          invalid: [{pos_integer(), Ecto.Changeset.t()}]
+        }
+
   @doc "Fetches a portfolio by id, raising if absent."
   @spec get_portfolio!(pos_integer()) :: Portfolio.t()
   def get_portfolio!(id), do: Repo.get!(Portfolio, id)
@@ -74,6 +80,37 @@ defmodule Folio.Portfolios do
       ensure_txn_history(transaction)
       {:ok, transaction}
     end
+  end
+
+  @doc """
+  Bulk-inserts transactions from an import. Rows that fail changeset
+  validation are reported without blocking the rows that are valid; rows
+  that collide on the `[:source, :external_id]` unique index (a repeat
+  import) are silently skipped. A row whose insert fails for any other
+  reason (e.g. a stale `asset_id`) is moved to `invalid` and the rest of the
+  batch is retried, so one such row can never sink the whole import. Price/FX
+  history is ensured once per distinct asset, at its earliest imported date,
+  instead of once per row.
+  """
+  @spec import_transactions(pos_integer(), [map()]) :: import_result()
+  def import_transactions(portfolio_id, attrs_list) do
+    {valid, invalid} =
+      attrs_list
+      |> Enum.with_index(1)
+      |> Enum.map(fn {attrs, row} ->
+        {row, Transaction.changeset(%Transaction{portfolio_id: portfolio_id}, attrs)}
+      end)
+      |> Enum.split_with(fn {_row, changeset} -> changeset.valid? end)
+
+    {inserted, insert_failures} = insert_all(valid)
+
+    ensure_import_history(inserted)
+
+    %{
+      inserted: length(inserted),
+      skipped: length(valid) - length(inserted) - length(insert_failures),
+      invalid: invalid ++ insert_failures
+    }
   end
 
   @doc "Fetches a transaction by id scoped to the portfolio, raising if absent."
@@ -146,15 +183,45 @@ defmodule Folio.Portfolios do
   defp get_asset(nil), do: nil
   defp get_asset(asset_id), do: Assets.get_asset(asset_id)
 
-  defp ensure_txn_history(%Transaction{} = transaction) do
-    %{quote_currency: quote_currency} = Assets.get_asset!(transaction.asset_id)
+  defp insert_all([]), do: {[], []}
 
-    :ok =
-      MarketData.ensure_history(
-        transaction.asset_id,
-        DateTime.to_date(transaction.executed_at),
-        quote_currency
-      )
+  defp insert_all(valid) do
+    multi =
+      Enum.reduce(valid, Multi.new(), fn {row, changeset}, multi ->
+        Multi.insert(multi, {:transaction, row}, changeset,
+          on_conflict: :nothing,
+          conflict_target:
+            {:unsafe_fragment,
+             "(source, external_id) WHERE source IS NOT NULL AND external_id IS NOT NULL"}
+        )
+      end)
+
+    case Repo.transaction(multi) do
+      {:ok, results} ->
+        {results |> Map.values() |> Enum.filter(& &1.id), []}
+
+      {:error, {:transaction, failed_row}, failed_changeset, _changes_so_far} ->
+        remaining = Enum.reject(valid, fn {row, _changeset} -> row == failed_row end)
+        {inserted, failures} = insert_all(remaining)
+        {inserted, [{failed_row, failed_changeset} | failures]}
+    end
+  end
+
+  defp ensure_txn_history(%Transaction{} = transaction) do
+    ensure_asset_history(transaction.asset_id, DateTime.to_date(transaction.executed_at))
+  end
+
+  defp ensure_import_history(transactions) do
+    transactions
+    |> Enum.group_by(& &1.asset_id, &DateTime.to_date(&1.executed_at))
+    |> Enum.each(fn {asset_id, dates} ->
+      ensure_asset_history(asset_id, Enum.min(dates, Date))
+    end)
+  end
+
+  defp ensure_asset_history(asset_id, date) do
+    %{quote_currency: quote_currency} = Assets.get_asset!(asset_id)
+    :ok = MarketData.ensure_history(asset_id, date, quote_currency)
   end
 
   defp default_currency(changeset, asset) do

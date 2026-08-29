@@ -6,6 +6,7 @@ defmodule FolioWeb.DashboardLiveTest do
   import Folio.PortfoliosFixtures
 
   alias Folio.MarketData
+  alias Folio.Portfolios
 
   setup :bootstrap_default_user
 
@@ -343,6 +344,80 @@ defmodule FolioWeb.DashboardLiveTest do
       refute has_element?(view, "#portfolio-change")
       assert view |> element("#portfolio-value") |> render() =~ "€ 0.00"
       assert has_element?(view, "#fab-add")
+    end
+  end
+
+  describe "import/export" do
+    test "the sidebar links to the import/export page", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      html = view |> element("a", "Import/Export") |> render_click()
+      assert html =~ "Export all transactions"
+    end
+
+    test "uploading and submitting a valid CSV imports it and shows a summary", %{
+      conn: conn,
+      portfolio: portfolio
+    } do
+      {:ok, view, _html} = live(conn, ~p"/import-export")
+
+      csv = """
+      type,executed_at,quantity,price_per_unit,fee,currency,source,external_id,asset_kind,asset_name,asset_symbol,asset_ticker,asset_isin,asset_mic,asset_quote_currency
+      buy,2025-01-01T00:00:00Z,1,100,0,EUR,test-import,ext-1,crypto,Bitcoin,BTC,,,,EUR
+      """
+
+      file =
+        file_input(view, "#import-form", :import_file, [
+          %{
+            name: "transactions.csv",
+            content: csv,
+            size: byte_size(csv),
+            type: "text/csv"
+          }
+        ])
+
+      render_upload(file, "transactions.csv")
+
+      html = view |> form("#import-form") |> render_submit()
+
+      assert html =~ "1 inserted"
+      assert Portfolios.any_transactions?(portfolio.id)
+    end
+
+    test "uploading a CSV with an invalid row shows the row number and reason", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/import-export")
+
+      csv = """
+      type,executed_at,quantity,price_per_unit,fee,currency,source,external_id,asset_kind,asset_name,asset_symbol,asset_ticker,asset_isin,asset_mic,asset_quote_currency
+      buy,2025-01-01T00:00:00Z,0,100,0,EUR,test-import,ext-2,crypto,Bitcoin,BTC,,,,EUR
+      """
+
+      file =
+        file_input(view, "#import-form", :import_file, [
+          %{name: "invalid.csv", content: csv, size: byte_size(csv), type: "text/csv"}
+        ])
+
+      render_upload(file, "invalid.csv")
+      html = view |> form("#import-form") |> render_submit()
+
+      assert html =~ "1 row(s) could not be imported"
+      assert html =~ "Row 1: quantity"
+    end
+
+    test "uploading a file with the wrong columns reports an error", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/import-export")
+
+      csv = "not,a,folio,export\nfoo,bar,baz,qux\n"
+
+      file =
+        file_input(view, "#import-form", :import_file, [
+          %{name: "bad.csv", content: csv, size: byte_size(csv), type: "text/csv"}
+        ])
+
+      render_upload(file, "bad.csv")
+      html = view |> form("#import-form") |> render_submit()
+
+      assert html =~ "doesn&#39;t look like a Folio export"
     end
   end
 end

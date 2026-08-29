@@ -14,6 +14,7 @@ defmodule FolioWeb.DashboardLive do
   alias Folio.Assets.Asset
   alias Folio.Assets.Candidate
   alias Folio.Assets.Identifier
+  alias Folio.ImportExport
   alias Folio.MarketData
   alias Folio.MarketData.Markets
   alias Folio.Portfolios
@@ -42,7 +43,8 @@ defmodule FolioWeb.DashboardLive do
        portfolio_id: portfolio.id
      )
      |> stream_configure(:holdings, dom_id: &"asset-#{&1.asset_id}")
-     |> stream(:holdings, [])}
+     |> stream(:holdings, [])
+     |> allow_upload(:import_file, accept: ~w(.csv), max_entries: 1)}
   end
 
   @impl true
@@ -229,6 +231,23 @@ defmodule FolioWeb.DashboardLive do
      socket
      |> put_flash(:info, "Transaction deleted")
      |> push_patch(to: ~p"/")}
+  end
+
+  def handle_event("validate_import", _params, socket), do: {:noreply, socket}
+
+  def handle_event("import_transactions", _params, socket) do
+    contents =
+      consume_uploaded_entries(socket, :import_file, fn %{path: path}, _entry ->
+        {:ok, File.read!(path)}
+      end)
+
+    case contents do
+      [content] ->
+        {:noreply, run_import(socket, content)}
+
+      [] ->
+        {:noreply, assign(socket, import_result: nil, import_error: "Choose a CSV file first")}
+    end
   end
 
   @impl true
@@ -423,6 +442,15 @@ defmodule FolioWeb.DashboardLive do
                   </div>
                 </div>
                 <div class="mx-5 border-t border-base-300"></div>
+                <div class="flex flex-col gap-1 px-3 py-3">
+                  <.link
+                    patch={~p"/import-export"}
+                    class="flex items-center gap-3 rounded-xl px-2 py-3 text-[15px] font-medium"
+                  >
+                    <.icon name="hero-arrow-up-tray" class="size-[18px] opacity-60" /> Import/Export
+                  </.link>
+                </div>
+                <div class="mx-5 border-t border-base-300"></div>
                 <div class="flex-1"></div>
                 <div class="px-5 pb-8 text-[12px] text-base-content/35">
                   v0.1 &middot; self-hosted
@@ -441,7 +469,14 @@ defmodule FolioWeb.DashboardLive do
                 {Asset.display_code(@asset)}<span :if={@asset.mic}> &middot; {Markets.name(@asset.mic)}</span>
               </span>
             </span>
-            <span class="ml-auto flex flex-col items-end gap-0.5">
+            <.link
+              href={~p"/export/transactions/#{@asset.id}"}
+              class="btn btn-ghost btn-sm btn-square ml-auto"
+              aria-label="Export CSV"
+            >
+              <.icon name="hero-arrow-down-tray" class="size-4" />
+            </.link>
+            <span class="flex flex-col items-end gap-0.5">
               <span
                 :if={@asset.isin}
                 id="asset-isin"
@@ -676,6 +711,89 @@ defmodule FolioWeb.DashboardLive do
             <p :if={@transactions == []} class="py-8 text-center text-sm text-base-content/50">
               No transactions for this asset.
             </p>
+          </div>
+        <% :import_export -> %>
+          <header class="sticky top-0 z-10 flex items-center gap-1 bg-base-100/95 px-4 py-3 backdrop-blur">
+            <.link patch={~p"/"} class="btn btn-ghost btn-sm btn-square" aria-label="Back">
+              <.icon name="hero-chevron-left" class="size-5" />
+            </.link>
+            <span class="text-[17px] font-semibold">Import/Export</span>
+          </header>
+
+          <div class="flex flex-col gap-6 px-4 pb-16 pt-2">
+            <section>
+              <h2 class="text-[13px] font-semibold uppercase tracking-wide text-base-content">
+                Export
+              </h2>
+              <p class="mt-1 text-[13px] leading-relaxed text-base-content/55">
+                Download every transaction as CSV &mdash; a full backup, or a file to move to
+                another tool. Each row carries the asset's own identity (ISIN + market, or
+                symbol), so nothing is locked in.
+              </p>
+              <.link
+                href={~p"/export/transactions"}
+                class="btn btn-primary mt-3 gap-2 rounded-full px-5"
+              >
+                <.icon name="hero-arrow-down-tray" class="size-4" /> Export all transactions
+              </.link>
+            </section>
+
+            <div class="border-t border-base-300"></div>
+
+            <section>
+              <h2 class="text-[13px] font-semibold uppercase tracking-wide text-base-content">
+                Import
+              </h2>
+              <p class="mt-1 text-[13px] leading-relaxed text-base-content/55">
+                Upload a Folio CSV export. Re-importing the same file is safe &mdash; rows
+                already present are skipped, not duplicated.
+              </p>
+              <form
+                id="import-form"
+                phx-submit="import_transactions"
+                phx-change="validate_import"
+                class="mt-3 flex flex-col items-start gap-3"
+              >
+                <.live_file_input
+                  upload={@uploads.import_file}
+                  class="file-input file-input-sm w-full rounded-lg"
+                />
+                <button
+                  type="submit"
+                  id="import-submit"
+                  class="btn btn-primary rounded-full px-5"
+                  disabled={@uploads.import_file.entries == []}
+                >
+                  Import
+                </button>
+              </form>
+
+              <div
+                :if={@import_result}
+                id="import-result"
+                class="mt-4 rounded-2xl bg-base-200/60 px-4 py-3.5 text-[13px]"
+              >
+                <p>
+                  {@import_result.inserted} inserted &middot; {@import_result.skipped} skipped as
+                  duplicates
+                </p>
+                <div :if={@import_result.invalid != []} class="mt-1 flex flex-col gap-1 text-error">
+                  <p>{length(@import_result.invalid)} row(s) could not be imported:</p>
+                  <ul class="list-disc pl-4">
+                    <li :for={entry <- Enum.take(@import_result.invalid, 5)}>
+                      {invalid_row_message(entry)}
+                    </li>
+                  </ul>
+                  <p :if={length(@import_result.invalid) > 5} class="text-base-content/50">
+                    and {length(@import_result.invalid) - 5} more.
+                  </p>
+                </div>
+              </div>
+
+              <p :if={@import_error} id="import-error" class="mt-4 text-[13px] text-error">
+                {@import_error}
+              </p>
+            </section>
           </div>
         <% _new_or_edit -> %>
           <header class="sticky top-0 z-10 flex items-center gap-1 bg-base-100/95 px-4 py-3 backdrop-blur">
@@ -1146,6 +1264,10 @@ defmodule FolioWeb.DashboardLive do
     init_form(socket, transaction, candidate)
   end
 
+  defp apply_action(socket, :import_export, _params) do
+    assign(socket, import_result: nil, import_error: nil)
+  end
+
   defp maybe_refresh(%{assigns: %{live_action: :index}} = socket), do: refresh_dashboard(socket)
   defp maybe_refresh(socket), do: socket
 
@@ -1366,6 +1488,33 @@ defmodule FolioWeb.DashboardLive do
 
   defp persist_transaction(%{assigns: %{portfolio_id: portfolio_id}}, params) do
     Portfolios.create_transaction(portfolio_id, params)
+  end
+
+  defp run_import(socket, content) do
+    case ImportExport.import_csv(socket.assigns.portfolio_id, content) do
+      {:ok, result} ->
+        assign(socket, import_result: result, import_error: nil)
+
+      {:error, reason} ->
+        assign(socket, import_result: nil, import_error: import_error_message(reason))
+    end
+  end
+
+  defp import_error_message(:empty_file), do: "That file is empty."
+
+  defp import_error_message(:unexpected_columns),
+    do: "That doesn't look like a Folio export - check the column headers."
+
+  defp import_error_message(:invalid_csv), do: "That file could not be parsed as CSV."
+  defp import_error_message(_other), do: "That file could not be imported."
+
+  defp invalid_row_message({row, changeset}) do
+    reasons =
+      Enum.map_join(changeset.errors, ", ", fn {field, error} ->
+        "#{field} #{translate_error(error)}"
+      end)
+
+    "Row #{row}: #{reasons}"
   end
 
   defp recompute_total(socket) do

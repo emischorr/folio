@@ -122,6 +122,118 @@ defmodule Folio.PortfoliosTest do
     end
   end
 
+  describe "import_transactions/2" do
+    test "inserts valid rows and reports invalid ones by 1-based row number" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+
+      result =
+        Portfolios.import_transactions(portfolio.id, [
+          %{
+            asset_id: asset.id,
+            type: :buy,
+            executed_at: ~U[2025-01-01 00:00:00Z],
+            quantity: "1",
+            price_per_unit: "10",
+            currency: "EUR"
+          },
+          %{
+            asset_id: asset.id,
+            type: :buy,
+            executed_at: ~U[2025-01-02 00:00:00Z],
+            quantity: "0",
+            price_per_unit: "10",
+            currency: "EUR"
+          }
+        ])
+
+      assert result.inserted == 1
+      assert result.skipped == 0
+      assert [{2, changeset}] = result.invalid
+      assert %{quantity: [_message]} = errors_on(changeset)
+    end
+
+    test "isolates a row that fails at the database level instead of crashing the whole import" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+
+      result =
+        Portfolios.import_transactions(portfolio.id, [
+          %{
+            asset_id: asset.id,
+            type: :buy,
+            executed_at: ~U[2025-01-01 00:00:00Z],
+            quantity: "1",
+            price_per_unit: "10",
+            currency: "EUR"
+          },
+          %{
+            asset_id: -1,
+            type: :buy,
+            executed_at: ~U[2025-01-02 00:00:00Z],
+            quantity: "1",
+            price_per_unit: "10",
+            currency: "EUR"
+          }
+        ])
+
+      assert result.inserted == 1
+      assert result.skipped == 0
+      assert [{2, changeset}] = result.invalid
+      assert %{asset_id: [_message]} = errors_on(changeset)
+      assert [only] = Portfolios.list_transactions(portfolio.id)
+      assert only.asset_id == asset.id
+    end
+
+    test "skips a row that collides on source/external_id instead of duplicating it" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+
+      row = %{
+        asset_id: asset.id,
+        type: :buy,
+        executed_at: ~U[2025-01-01 00:00:00Z],
+        quantity: "1",
+        price_per_unit: "10",
+        currency: "EUR",
+        source: "test",
+        external_id: "1"
+      }
+
+      assert %{inserted: 1, skipped: 0} = Portfolios.import_transactions(portfolio.id, [row])
+      assert %{inserted: 0, skipped: 1} = Portfolios.import_transactions(portfolio.id, [row])
+      assert length(Portfolios.list_transactions(portfolio.id)) == 1
+    end
+
+    test "enqueues one backfill per distinct asset, at the earliest imported date" do
+      portfolio = portfolio_fixture()
+      asset = stock_asset_fixture()
+
+      Portfolios.import_transactions(portfolio.id, [
+        %{
+          asset_id: asset.id,
+          type: :buy,
+          executed_at: ~U[2025-03-01 00:00:00Z],
+          quantity: "1",
+          price_per_unit: "10",
+          currency: "USD"
+        },
+        %{
+          asset_id: asset.id,
+          type: :buy,
+          executed_at: ~U[2025-01-01 00:00:00Z],
+          quantity: "1",
+          price_per_unit: "10",
+          currency: "USD"
+        }
+      ])
+
+      assert_enqueued worker: BackfillAssetPrices, args: %{asset_id: asset.id}
+      assert_enqueued worker: BackfillFxRates, args: %{currency: "USD", from: "2025-01-01"}
+      refute_enqueued worker: BackfillFxRates, args: %{currency: "USD", from: "2025-03-01"}
+    end
+  end
+
   describe "transactions" do
     test "list_transactions/2 orders by execution time and filters by asset" do
       portfolio = portfolio_fixture()

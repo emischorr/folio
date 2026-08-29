@@ -221,4 +221,20 @@ defmodule Folio.AssetsTest do
              }
     end
   end
+
+  describe "get_by_identity/1" do
+    test "finds a crypto asset by symbol, case-insensitively" do
+      bitcoin = crypto_asset_fixture(%{symbol: "BTC"})
+
+      assert Assets.get_by_identity(%{kind: :crypto, symbol: "btc"}).id == bitcoin.id
+      assert Assets.get_by_identity(%{kind: :crypto, symbol: "ETH"}) == nil
+    end
+
+    test "finds a security by ISIN + MIC" do
+      asset = stock_asset_fixture()
+
+      assert Assets.get_by_identity(%{isin: asset.isin, mic: asset.mic}).id == asset.id
+      assert Assets.get_by_identity(%{isin: asset.isin, mic: "XETR"}) == nil
+    end
+  end
 end
