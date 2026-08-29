@@ -22,6 +22,10 @@ holdings — and nothing else competing for your attention.
   window and a sparkline; click through for that asset's transaction history.
 - **Currency switch** — view everything in EUR or USD, converted per timestamp
   through daily ECB rates.
+- **CSV export/import** — back up every transaction, or move them to another
+  tool. Each row carries the asset's own identity (ISIN + market, or symbol
+  for crypto), so a file is self-sufficient and re-importing it is a safe
+  no-op — nothing about Folio locks your data in.
 - **Honest numbers** — cost basis is locked in the portfolio's base currency at
   execution time, and money paid in during a window is not counted as profit.
 - **Live updates** — background price and FX refreshes push straight into the
@@ -32,7 +36,7 @@ holdings — and nothing else competing for your attention.
 
 v0.1, and built for a single person on a single machine. One portfolio, one
 bootstrapped user, and no login flow yet — the session simply acts as the `Admin`
-user. There is no CSV or broker import, no dividend tracking, and no JSON API.
+user. There is no dividend tracking and no JSON API.
 
 ## Quick start
 
@@ -144,6 +148,31 @@ with a capped doubling backoff and is cancelled at the limit.
 A boundary test enforces that nothing outside `lib/folio/market_data/`
 touches sources, chain, limiter or cache — the rest of the app sees only the
 `Folio.MarketData` API plus the pure `Markets`/`Listing` modules.
+
+## Architecture: import/export
+
+Folio never locks your data in. `Folio.ImportExport` exports every
+transaction as CSV — close to the `transactions` table, with the asset's
+vendor-neutral identity (ISIN + market, or symbol for crypto) denormalized
+onto each row, so a file is self-sufficient even on an instance that has
+never seen that asset before. Re-importing an exported file is a safe no-op:
+`source`/`external_id` give each row a stable natural key, so already-present
+rows are skipped rather than duplicated.
+
+Import is a pluggable behaviour, `Folio.ImportExport.Format`, precisely so a
+second file shape doesn't touch anything else. `Folio.ImportExport.Formats.FolioCsv`
+is the only implementation today, both for export and for reading its own
+file back in.
+
+### Adding an import format
+
+1. Implement `Folio.ImportExport.Format` (`parse/1`) in a new module under
+   `lib/folio/import_export/formats/`, mapping the file's own columns onto
+   the canonical field set documented on the behaviour.
+2. Pass the module explicitly to `Folio.ImportExport.import_csv/3` (it
+   defaults to `Formats.FolioCsv`) — asset resolution, deduping and the
+   batched price/FX backfill are all handled by `Folio.ImportExport` and
+   `Folio.Portfolios` and need no changes.
 
 ## External data sources
 
