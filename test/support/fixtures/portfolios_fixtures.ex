@@ -24,6 +24,17 @@ defmodule Folio.PortfoliosFixtures do
     portfolio
   end
 
+  @doc "Creates an asset group. Required: `:portfolio_id`."
+  @spec asset_group_fixture(map()) :: Folio.Portfolios.AssetGroup.t()
+  def asset_group_fixture(attrs) do
+    {:ok, group} =
+      Portfolios.create_asset_group(attrs.portfolio_id, %{
+        name: Map.get(attrs, :name, "Group #{System.unique_integer([:positive])}")
+      })
+
+    group
+  end
+
   @doc """
   Inserts a transaction directly. Required: `:portfolio_id`, `:asset_id`.
   Numeric attrs accept anything `Decimal.new/1` accepts.

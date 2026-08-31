@@ -333,6 +333,184 @@ defmodule FolioWeb.DashboardLiveTest do
     end
   end
 
+  describe "asset grouping" do
+    setup :seed_holdings
+
+    test "dashboard renders a group header summarizing the group's value", %{
+      conn: conn,
+      portfolio: portfolio,
+      bitcoin: bitcoin
+    } do
+      group = asset_group_fixture(%{portfolio_id: portfolio.id, name: "Crypto"})
+      {:ok, _} = Folio.Portfolios.assign_asset_to_group(portfolio.id, bitcoin.id, group.id)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      assert has_element?(view, "#group-#{group.id}", "Crypto")
+      assert has_element?(view, "#asset-#{bitcoin.id}")
+    end
+
+    test "ungrouped assets keep rendering without a group header", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      refute has_element?(view, "[id^='group-']")
+      assert has_element?(view, "#ungrouped")
+    end
+
+    test "toggling the group header hides and reshows its cards", %{
+      conn: conn,
+      portfolio: portfolio,
+      bitcoin: bitcoin
+    } do
+      group = asset_group_fixture(%{portfolio_id: portfolio.id, name: "Crypto"})
+      {:ok, _} = Folio.Portfolios.assign_asset_to_group(portfolio.id, bitcoin.id, group.id)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert has_element?(view, "#asset-#{bitcoin.id}")
+
+      view |> element("#toggle-group-#{group.id}") |> render_click()
+      refute has_element?(view, "#asset-#{bitcoin.id}")
+
+      view |> element("#toggle-group-#{group.id}") |> render_click()
+      assert has_element?(view, "#asset-#{bitcoin.id}")
+    end
+
+    test "collapse state survives a refresh-triggering event", %{
+      conn: conn,
+      portfolio: portfolio,
+      bitcoin: bitcoin
+    } do
+      group = asset_group_fixture(%{portfolio_id: portfolio.id, name: "Crypto"})
+      {:ok, _} = Folio.Portfolios.assign_asset_to_group(portfolio.id, bitcoin.id, group.id)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      view |> element("#toggle-group-#{group.id}") |> render_click()
+      refute has_element?(view, "#asset-#{bitcoin.id}")
+
+      view |> element("#window-1m") |> render_click()
+
+      refute has_element?(view, "#asset-#{bitcoin.id}")
+    end
+
+    test "asset page button reflects ungrouped and grouped state", %{
+      conn: conn,
+      portfolio: portfolio,
+      bitcoin: bitcoin
+    } do
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+      assert view |> element("#add-to-group") |> render() =~ "Add to group"
+
+      group = asset_group_fixture(%{portfolio_id: portfolio.id, name: "Crypto"})
+      {:ok, _} = Folio.Portfolios.assign_asset_to_group(portfolio.id, bitcoin.id, group.id)
+
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+      assert view |> element("#add-to-group") |> render() =~ "Crypto"
+    end
+
+    test "opening the modal lists existing groups", %{
+      conn: conn,
+      portfolio: portfolio,
+      bitcoin: bitcoin
+    } do
+      asset_group_fixture(%{portfolio_id: portfolio.id, name: "Crypto"})
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+
+      refute has_element?(view, "#asset-group-modal")
+      view |> element("#add-to-group") |> render_click()
+
+      assert has_element?(view, "#asset-group-modal")
+      assert view |> element("#group-select") |> render() =~ "Crypto"
+    end
+
+    test "assigning to an existing group closes the modal and updates the dashboard", %{
+      conn: conn,
+      portfolio: portfolio,
+      bitcoin: bitcoin
+    } do
+      group = asset_group_fixture(%{portfolio_id: portfolio.id, name: "Crypto"})
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+
+      view |> element("#add-to-group") |> render_click()
+
+      view
+      |> form("#group-select-form", %{asset_group_id: group.id})
+      |> render_change()
+
+      refute has_element?(view, "#asset-group-modal")
+      assert view |> element("#add-to-group") |> render() =~ "Crypto"
+
+      {:ok, dashboard, _html} = live(conn, ~p"/")
+      assert has_element?(dashboard, "#group-#{group.id}", "Crypto")
+    end
+
+    test "reassigning moves the asset rather than duplicating it", %{
+      conn: conn,
+      portfolio: portfolio,
+      bitcoin: bitcoin
+    } do
+      group_a = asset_group_fixture(%{portfolio_id: portfolio.id, name: "A"})
+      group_b = asset_group_fixture(%{portfolio_id: portfolio.id, name: "B"})
+      {:ok, _} = Folio.Portfolios.assign_asset_to_group(portfolio.id, bitcoin.id, group_a.id)
+
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+      view |> element("#add-to-group") |> render_click()
+
+      view
+      |> form("#group-select-form", %{asset_group_id: group_b.id})
+      |> render_change()
+
+      assert Folio.Portfolios.get_asset_group_for_asset(portfolio.id, bitcoin.id).id ==
+               group_b.id
+    end
+
+    test "creating a new group assigns it and offers it as a future option", %{
+      conn: conn,
+      bitcoin: bitcoin
+    } do
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+
+      view |> element("#add-to-group") |> render_click()
+      view |> form("#new-group-form", asset_group: %{name: "Growth"}) |> render_submit()
+
+      refute has_element?(view, "#asset-group-modal")
+      assert view |> element("#add-to-group") |> render() =~ "Growth"
+
+      view |> element("#add-to-group") |> render_click()
+      assert view |> element("#group-select") |> render() =~ "Growth"
+    end
+
+    test "creating a group with a duplicate name keeps the modal open with an error", %{
+      conn: conn,
+      portfolio: portfolio,
+      bitcoin: bitcoin
+    } do
+      asset_group_fixture(%{portfolio_id: portfolio.id, name: "Growth"})
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+
+      view |> element("#add-to-group") |> render_click()
+
+      html =
+        view |> form("#new-group-form", asset_group: %{name: "Growth"}) |> render_submit()
+
+      assert has_element?(view, "#asset-group-modal")
+      assert html =~ "has already been taken"
+    end
+
+    test "closing the modal via the close button leaves everything unchanged", %{
+      conn: conn,
+      bitcoin: bitcoin
+    } do
+      {:ok, view, _html} = live(conn, ~p"/assets/#{bitcoin.id}")
+
+      view |> element("#add-to-group") |> render_click()
+      assert has_element?(view, "#asset-group-modal")
+
+      view |> element("#asset-group-modal-close") |> render_click()
+      refute has_element?(view, "#asset-group-modal")
+      assert view |> element("#add-to-group") |> render() =~ "Add to group"
+    end
+  end
+
   describe "without transactions" do
     test "renders the empty state without chart or change indicator", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/")

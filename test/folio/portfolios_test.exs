@@ -234,4 +234,132 @@ defmodule Folio.PortfoliosTest do
       assert Enum.sort(Portfolios.transaction_currencies()) == ["EUR", "USD"]
     end
   end
+
+  describe "asset groups" do
+    test "create_asset_group/2 scopes the group to the portfolio" do
+      portfolio = portfolio_fixture()
+
+      assert {:ok, group} = Portfolios.create_asset_group(portfolio.id, %{name: "Tech"})
+      assert group.portfolio_id == portfolio.id
+      assert group.name == "Tech"
+    end
+
+    test "create_asset_group/2 rejects a blank name" do
+      portfolio = portfolio_fixture()
+
+      assert {:error, changeset} = Portfolios.create_asset_group(portfolio.id, %{name: ""})
+      assert %{name: [_message]} = errors_on(changeset)
+    end
+
+    test "create_asset_group/2 rejects a duplicate name within the same portfolio" do
+      portfolio = portfolio_fixture()
+      asset_group_fixture(%{portfolio_id: portfolio.id, name: "Tech"})
+
+      assert {:error, changeset} = Portfolios.create_asset_group(portfolio.id, %{name: "Tech"})
+      assert %{name: [_message]} = errors_on(changeset)
+    end
+
+    test "create_asset_group/2 allows the same name across different portfolios" do
+      portfolio_a = portfolio_fixture()
+      portfolio_b = portfolio_fixture()
+      asset_group_fixture(%{portfolio_id: portfolio_a.id, name: "Tech"})
+
+      assert {:ok, _group} = Portfolios.create_asset_group(portfolio_b.id, %{name: "Tech"})
+    end
+
+    test "list_asset_groups/1 returns groups alphabetically, scoped to the portfolio" do
+      portfolio = portfolio_fixture()
+      other = portfolio_fixture()
+      asset_group_fixture(%{portfolio_id: portfolio.id, name: "Value"})
+      asset_group_fixture(%{portfolio_id: portfolio.id, name: "Growth"})
+      asset_group_fixture(%{portfolio_id: other.id, name: "Alpha"})
+
+      assert Portfolios.list_asset_groups(portfolio.id) |> Enum.map(& &1.name) ==
+               ["Growth", "Value"]
+    end
+
+    test "change_asset_group/2 validates without persisting" do
+      changeset = Portfolios.change_asset_group(%Folio.Portfolios.AssetGroup{}, %{name: ""})
+
+      refute changeset.valid?
+      assert %{name: [_message]} = errors_on(changeset)
+    end
+
+    test "assign_asset_to_group/3 creates the membership" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+      group = asset_group_fixture(%{portfolio_id: portfolio.id, name: "Crypto"})
+
+      assert {:ok, assigned} = Portfolios.assign_asset_to_group(portfolio.id, asset.id, group.id)
+      assert assigned.id == group.id
+      assert Portfolios.get_asset_group_for_asset(portfolio.id, asset.id).id == group.id
+    end
+
+    test "assign_asset_to_group/3 reassigns rather than duplicating" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+      group_a = asset_group_fixture(%{portfolio_id: portfolio.id, name: "A"})
+      group_b = asset_group_fixture(%{portfolio_id: portfolio.id, name: "B"})
+
+      {:ok, _} = Portfolios.assign_asset_to_group(portfolio.id, asset.id, group_a.id)
+      {:ok, _} = Portfolios.assign_asset_to_group(portfolio.id, asset.id, group_b.id)
+
+      assert Portfolios.get_asset_group_for_asset(portfolio.id, asset.id).id == group_b.id
+      assert Portfolios.asset_group_by_asset(portfolio.id) |> map_size() == 1
+    end
+
+    test "assign_asset_to_group/3 raises when the group belongs to a different portfolio" do
+      portfolio = portfolio_fixture()
+      other = portfolio_fixture()
+      asset = crypto_asset_fixture()
+      group = asset_group_fixture(%{portfolio_id: other.id, name: "Foreign"})
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Portfolios.assign_asset_to_group(portfolio.id, asset.id, group.id)
+      end
+    end
+
+    test "get_asset_group_for_asset/2 returns nil when ungrouped" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+
+      assert Portfolios.get_asset_group_for_asset(portfolio.id, asset.id) == nil
+    end
+
+    test "asset_group_by_asset/1 maps only grouped assets in that portfolio" do
+      portfolio = portfolio_fixture()
+      grouped = crypto_asset_fixture()
+      ungrouped = stock_asset_fixture()
+      group = asset_group_fixture(%{portfolio_id: portfolio.id, name: "Crypto"})
+      {:ok, _} = Portfolios.assign_asset_to_group(portfolio.id, grouped.id, group.id)
+
+      map = Portfolios.asset_group_by_asset(portfolio.id)
+
+      assert map[grouped.id].id == group.id
+      refute Map.has_key?(map, ungrouped.id)
+    end
+
+    test "create_asset_group_and_assign/3 creates and assigns atomically" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+
+      assert {:ok, group} =
+               Portfolios.create_asset_group_and_assign(portfolio.id, asset.id, %{name: "Tech"})
+
+      assert group.name == "Tech"
+      assert Portfolios.get_asset_group_for_asset(portfolio.id, asset.id).id == group.id
+    end
+
+    test "create_asset_group_and_assign/3 rolls back the membership on a duplicate name" do
+      portfolio = portfolio_fixture()
+      asset = crypto_asset_fixture()
+      asset_group_fixture(%{portfolio_id: portfolio.id, name: "Tech"})
+
+      assert {:error, changeset} =
+               Portfolios.create_asset_group_and_assign(portfolio.id, asset.id, %{name: "Tech"})
+
+      assert %{name: [_message]} = errors_on(changeset)
+      assert Portfolios.get_asset_group_for_asset(portfolio.id, asset.id) == nil
+    end
+  end
 end

@@ -9,6 +9,8 @@ defmodule Folio.Portfolios do
   alias Ecto.Multi
   alias Folio.Assets
   alias Folio.MarketData
+  alias Folio.Portfolios.AssetGroup
+  alias Folio.Portfolios.AssetGroupMember
   alias Folio.Portfolios.Portfolio
   alias Folio.Portfolios.PortfolioMember
   alias Folio.Portfolios.Transaction
@@ -141,6 +143,111 @@ defmodule Folio.Portfolios do
       )
 
     if earliest, do: DateTime.to_date(earliest)
+  end
+
+  @doc "Groups in the portfolio, ordered by name."
+  @spec list_asset_groups(pos_integer()) :: [AssetGroup.t()]
+  def list_asset_groups(portfolio_id) do
+    Repo.all(
+      from g in AssetGroup, where: g.portfolio_id == ^portfolio_id, order_by: [asc: g.name]
+    )
+  end
+
+  @doc "Maps every grouped asset in the portfolio to its group, for bulk dashboard lookup."
+  @spec asset_group_by_asset(pos_integer()) :: %{pos_integer() => AssetGroup.t()}
+  def asset_group_by_asset(portfolio_id) do
+    from(m in AssetGroupMember,
+      join: g in AssetGroup,
+      on: g.id == m.asset_group_id,
+      where: m.portfolio_id == ^portfolio_id,
+      select: {m.asset_id, g}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc "The group the asset is currently in, within the portfolio, or nil."
+  @spec get_asset_group_for_asset(pos_integer(), pos_integer()) :: AssetGroup.t() | nil
+  def get_asset_group_for_asset(portfolio_id, asset_id) do
+    Repo.one(
+      from m in AssetGroupMember,
+        join: g in AssetGroup,
+        on: g.id == m.asset_group_id,
+        where: m.portfolio_id == ^portfolio_id and m.asset_id == ^asset_id,
+        select: g
+    )
+  end
+
+  @doc "Creates a group in the portfolio."
+  @spec create_asset_group(pos_integer(), map()) ::
+          {:ok, AssetGroup.t()} | {:error, Ecto.Changeset.t()}
+  def create_asset_group(portfolio_id, attrs) do
+    %AssetGroup{portfolio_id: portfolio_id}
+    |> AssetGroup.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc "Changeset for creating or renaming a group (form validation)."
+  @spec change_asset_group(AssetGroup.t(), map()) :: Ecto.Changeset.t()
+  def change_asset_group(asset_group \\ %AssetGroup{}, attrs \\ %{}) do
+    AssetGroup.changeset(asset_group, attrs)
+  end
+
+  @doc """
+  Assigns the asset to the group, scoped to the portfolio. Reassigns (moves
+  the asset out of any prior group) on conflict. `asset_group_id` must belong
+  to `portfolio_id`, or this raises, so callers can't cross-wire a group from
+  a different portfolio.
+  """
+  @spec assign_asset_to_group(pos_integer(), pos_integer(), pos_integer()) ::
+          {:ok, AssetGroup.t()} | {:error, Ecto.Changeset.t()}
+  def assign_asset_to_group(portfolio_id, asset_id, asset_group_id) do
+    group = Repo.get_by!(AssetGroup, id: asset_group_id, portfolio_id: portfolio_id)
+
+    changeset =
+      AssetGroupMember.changeset(
+        %AssetGroupMember{
+          asset_group_id: group.id,
+          portfolio_id: portfolio_id,
+          asset_id: asset_id
+        },
+        %{}
+      )
+
+    case Repo.insert(changeset,
+           on_conflict: [set: [asset_group_id: group.id, updated_at: DateTime.utc_now()]],
+           conflict_target: [:portfolio_id, :asset_id]
+         ) do
+      {:ok, _member} -> {:ok, group}
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  @doc """
+  Creates a group and assigns the asset to it, atomically. Fails with the
+  group changeset if the name is blank or already taken in the portfolio.
+  """
+  @spec create_asset_group_and_assign(pos_integer(), pos_integer(), map()) ::
+          {:ok, AssetGroup.t()} | {:error, Ecto.Changeset.t()}
+  def create_asset_group_and_assign(portfolio_id, asset_id, attrs) do
+    Multi.new()
+    |> Multi.insert(:group, AssetGroup.changeset(%AssetGroup{portfolio_id: portfolio_id}, attrs))
+    |> Multi.insert(:member, fn %{group: group} ->
+      AssetGroupMember.changeset(
+        %AssetGroupMember{
+          asset_group_id: group.id,
+          portfolio_id: portfolio_id,
+          asset_id: asset_id
+        },
+        %{}
+      )
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{group: group}} -> {:ok, group}
+      {:error, :group, changeset, _changes} -> {:error, changeset}
+      {:error, :member, changeset, _changes} -> {:error, changeset}
+    end
   end
 
   defp get_asset(nil), do: nil
