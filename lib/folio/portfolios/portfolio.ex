@@ -16,6 +16,7 @@ defmodule Folio.Portfolios.Portfolio do
 
     has_many :members, Folio.Portfolios.PortfolioMember
     has_many :transactions, Folio.Portfolios.Transaction
+    has_many :asset_groups, Folio.Portfolios.AssetGroup
 
     timestamps(type: :utc_datetime)
   end

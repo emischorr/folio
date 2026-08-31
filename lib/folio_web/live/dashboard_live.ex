@@ -32,17 +32,16 @@ defmodule FolioWeb.DashboardLive do
     end
 
     {:ok,
-     socket
-     |> assign(
+     assign(socket,
        page_title: "Folio",
        window: Keyword.get(dashboard, :window, :"1w"),
        mode: Keyword.get(dashboard, :mode, :value),
        currency: Keyword.get(dashboard, :currency, "EUR"),
        time_format: Keyword.get(dashboard, :time_format, :"24h"),
-       portfolio_id: portfolio.id
-     )
-     |> stream_configure(:holdings, dom_id: &"asset-#{&1.asset_id}")
-     |> stream(:holdings, [])}
+       portfolio_id: portfolio.id,
+       sections: [],
+       collapsed_group_ids: MapSet.new()
+     )}
   end
 
   @impl true
@@ -67,6 +66,66 @@ defmodule FolioWeb.DashboardLive do
     currency = if currency == "USD", do: "USD", else: "EUR"
 
     {:noreply, socket |> assign(currency: currency) |> refresh_dashboard()}
+  end
+
+  def handle_event("toggle_group", %{"group-id" => id}, socket) do
+    id = String.to_integer(id)
+    collapsed = socket.assigns.collapsed_group_ids
+
+    collapsed =
+      if MapSet.member?(collapsed, id),
+        do: MapSet.delete(collapsed, id),
+        else: MapSet.put(collapsed, id)
+
+    {:noreply, assign(socket, collapsed_group_ids: collapsed)}
+  end
+
+  def handle_event("open_group_modal", _params, socket) do
+    {:noreply,
+     assign(socket,
+       group_modal_open?: true,
+       new_group_form: to_form(Portfolios.change_asset_group())
+     )}
+  end
+
+  def handle_event("close_group_modal", _params, socket) do
+    {:noreply, assign(socket, group_modal_open?: false)}
+  end
+
+  def handle_event("assign_group", %{"asset_group_id" => id}, socket) when id != "" do
+    %{portfolio_id: portfolio_id, asset: asset} = socket.assigns
+
+    case Portfolios.assign_asset_to_group(portfolio_id, asset.id, String.to_integer(id)) do
+      {:ok, group} ->
+        {:noreply,
+         socket
+         |> assign(current_asset_group: group, group_modal_open?: false)
+         |> put_flash(:info, "Added to #{group.name}")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Could not assign the group")}
+    end
+  end
+
+  def handle_event("assign_group", _params, socket), do: {:noreply, socket}
+
+  def handle_event("create_group", %{"asset_group" => params}, socket) do
+    %{portfolio_id: portfolio_id, asset: asset} = socket.assigns
+
+    case Portfolios.create_asset_group_and_assign(portfolio_id, asset.id, params) do
+      {:ok, group} ->
+        {:noreply,
+         socket
+         |> assign(
+           current_asset_group: group,
+           asset_groups: Portfolios.list_asset_groups(portfolio_id),
+           group_modal_open?: false
+         )
+         |> put_flash(:info, "Created #{group.name} and added this asset")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, new_group_form: to_form(changeset))}
+    end
   end
 
   def handle_event("select_asset_window", %{"window" => window}, socket) do
@@ -352,19 +411,52 @@ defmodule FolioWeb.DashboardLive do
                   </div>
                 </div>
 
-                <div id="holdings" phx-update="stream" class="mt-4 flex flex-col gap-2.5 px-4 pb-28">
+                <div id="holdings" class="mt-4 flex flex-col gap-2.5 px-4 pb-28">
                   <div
+                    :if={@holdings_empty?}
                     id="holdings-empty"
-                    class="hidden py-8 text-center text-sm text-base-content/50 only:block"
+                    class="py-8 text-center text-sm text-base-content/50"
                   >
                     No open positions
                   </div>
-                  <.asset_card
-                    :for={{id, holding} <- @streams.holdings}
-                    id={id}
-                    holding={holding}
-                    currency={@currency}
-                  />
+                  <div :for={section <- @sections} id={section.id} class="flex flex-col gap-2.5">
+                    <div :if={section.group} class="flex items-center justify-between px-1">
+                      <button
+                        type="button"
+                        id={"toggle-#{section.id}"}
+                        phx-click="toggle_group"
+                        phx-value-group-id={section.group.id}
+                        class="flex items-center gap-1.5 text-[13px] font-semibold uppercase tracking-wide text-base-content/60"
+                      >
+                        <.icon
+                          name={
+                            if MapSet.member?(@collapsed_group_ids, section.group.id),
+                              do: "hero-chevron-right",
+                              else: "hero-chevron-down"
+                          }
+                          class="size-3.5"
+                        />
+                        {section.group.name}
+                      </button>
+                      <span class="text-[13px] font-medium tabular-nums text-base-content/50">
+                        {money(section.total_value, @currency)}
+                      </span>
+                    </div>
+                    <div
+                      :if={
+                        is_nil(section.group) or
+                          not MapSet.member?(@collapsed_group_ids, section.group.id)
+                      }
+                      class="flex flex-col gap-2.5"
+                    >
+                      <.asset_card
+                        :for={holding <- section.holdings}
+                        id={"asset-#{holding.asset_id}"}
+                        holding={holding}
+                        currency={@currency}
+                      />
+                    </div>
+                  </div>
                 </div>
               <% end %>
 
@@ -454,6 +546,66 @@ defmodule FolioWeb.DashboardLive do
               </span>
             </span>
           </header>
+          <div class="px-4 pb-2">
+            <button
+              type="button"
+              id="add-to-group"
+              phx-click="open_group_modal"
+              class="btn btn-sm btn-soft rounded-full"
+            >
+              <%= if @current_asset_group do %>
+                {@current_asset_group.name}
+              <% else %>
+                Add to group
+              <% end %>
+            </button>
+          </div>
+          <.modal
+            :if={@group_modal_open?}
+            id="asset-group-modal"
+            on_cancel={JS.push("close_group_modal")}
+          >
+            <h2 class="text-[16px] font-semibold">Add to group</h2>
+
+            <form id="group-select-form" phx-change="assign_group" class="mt-4">
+              <.input
+                type="select"
+                name="asset_group_id"
+                id="group-select"
+                value={@current_asset_group && @current_asset_group.id}
+                prompt="Choose a group"
+                options={Enum.map(@asset_groups, &{&1.name, &1.id})}
+                class="select w-full rounded-xl"
+              />
+            </form>
+
+            <div class="my-4 border-t border-base-300" />
+
+            <.form
+              for={@new_group_form}
+              id="new-group-form"
+              phx-submit="create_group"
+              class="flex items-end gap-2"
+            >
+              <div class="flex-1">
+                <.input
+                  field={@new_group_form[:name]}
+                  type="text"
+                  label="New group"
+                  id="new-group-name"
+                  placeholder="e.g. Growth"
+                />
+              </div>
+              <button
+                type="submit"
+                id="create-group-submit"
+                class="btn btn-primary"
+                phx-disable-with="Creating..."
+              >
+                Create &amp; add
+              </button>
+            </.form>
+          </.modal>
           <div
             :if={Asset.unresolved?(@asset)}
             id="asset-unresolved"
@@ -1131,7 +1283,12 @@ defmodule FolioWeb.DashboardLive do
       asset_window: socket.assigns.window,
       asset_mode: socket.assigns.mode,
       asset_currency: socket.assigns.currency,
-      show_asset_chart?: not Asset.unresolved?(asset) and not is_nil(latest)
+      show_asset_chart?: not Asset.unresolved?(asset) and not is_nil(latest),
+      asset_groups: Portfolios.list_asset_groups(socket.assigns.portfolio_id),
+      current_asset_group:
+        Portfolios.get_asset_group_for_asset(socket.assigns.portfolio_id, asset.id),
+      group_modal_open?: false,
+      new_group_form: to_form(Portfolios.change_asset_group())
     )
     |> assign_asset_position()
     |> maybe_push_asset_chart_data()
@@ -1153,23 +1310,51 @@ defmodule FolioWeb.DashboardLive do
     %{portfolio_id: portfolio_id, window: window, currency: currency} = socket.assigns
     holdings = Analytics.holdings(portfolio_id, window, currency)
     price_ages = MarketData.latest_prices(Enum.map(holdings, & &1.asset_id))
+    groups_by_asset = Portfolios.asset_group_by_asset(portfolio_id)
+
+    enriched_holdings =
+      Enum.map(holdings, fn holding ->
+        holding
+        |> Map.put(:sparkline, sparkline_points(holding.series))
+        |> Map.put(:price_at, get_in(price_ages, [holding.asset_id, :at]))
+      end)
 
     socket
     |> assign(
       summary: Analytics.summary(portfolio_id, window, currency),
       empty?: not Portfolios.any_transactions?(portfolio_id),
-      holdings_empty?: holdings == []
-    )
-    |> stream(
-      :holdings,
-      Enum.map(holdings, fn holding ->
-        holding
-        |> Map.put(:sparkline, sparkline_points(holding.series))
-        |> Map.put(:price_at, get_in(price_ages, [holding.asset_id, :at]))
-      end),
-      reset: true
+      holdings_empty?: holdings == [],
+      sections: build_sections(enriched_holdings, groups_by_asset)
     )
     |> push_chart_data()
+  end
+
+  # The holdings list is small and bounded (a personal single-portfolio
+  # tracker), and grouping turns it into a hierarchy that a LiveView stream
+  # can't represent - so, unlike the rest of this app's collections, it's a
+  # plain assign rebuilt on every refresh rather than a stream.
+  defp build_sections(holdings, groups_by_asset) do
+    {grouped, ungrouped} = Enum.split_with(holdings, &Map.has_key?(groups_by_asset, &1.asset_id))
+
+    grouped_sections =
+      grouped
+      |> Enum.group_by(&Map.fetch!(groups_by_asset, &1.asset_id))
+      |> Enum.map(fn {group, group_holdings} ->
+        %{
+          id: "group-#{group.id}",
+          group: group,
+          total_value: Enum.reduce(group_holdings, Decimal.new(0), &Decimal.add(&2, &1.value)),
+          holdings: Enum.sort_by(group_holdings, & &1.value, {:desc, Decimal})
+        }
+      end)
+      |> Enum.sort_by(fn %{group: group} -> group.name end)
+
+    ungrouped_section =
+      if ungrouped == [],
+        do: [],
+        else: [%{id: "ungrouped", group: nil, total_value: nil, holdings: ungrouped}]
+
+    grouped_sections ++ ungrouped_section
   end
 
   defp push_chart_data(socket) do

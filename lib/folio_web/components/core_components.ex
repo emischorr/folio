@@ -313,6 +313,48 @@ defmodule FolioWeb.CoreComponents do
   end
 
   @doc """
+  Renders a modal dialog. Visibility is entirely assign-driven via the
+  caller's `:if` so it stays testable with `has_element?/2` - opening and
+  closing goes through `handle_event`, not client-only CSS/JS state.
+
+  ## Examples
+
+  ```heex
+  <.modal :if={@show_modal?} id="my-modal" on_cancel={JS.push("close_modal")}>
+    Modal content
+  </.modal>
+  ```
+  """
+  attr :id, :string, required: true
+  attr :on_cancel, JS, default: %JS{}
+  slot :inner_block, required: true
+
+  def modal(assigns) do
+    ~H"""
+    <div id={@id} class="modal modal-open" role="dialog" aria-modal="true">
+      <div class="modal-backdrop" phx-click={@on_cancel} />
+      <.focus_wrap
+        id={"#{@id}-box"}
+        class="modal-box"
+        phx-window-keydown={@on_cancel}
+        phx-key="escape"
+      >
+        <button
+          type="button"
+          id={"#{@id}-close"}
+          phx-click={@on_cancel}
+          class="btn btn-sm btn-circle btn-ghost absolute right-3 top-3"
+          aria-label="Close"
+        >
+          <.icon name="hero-x-mark" class="size-4" />
+        </button>
+        {render_slot(@inner_block)}
+      </.focus_wrap>
+    </div>
+    """
+  end
+
+  @doc """
   Renders a header with title.
   """
   slot :inner_block, required: true
